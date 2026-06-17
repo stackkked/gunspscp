@@ -1,0 +1,421 @@
+-- Original Path: ReplicatedStorage‌.Modules.BulletHandler_client
+-- ClassName: ModuleScript
+-- IsNil: false
+
+-- Decompiled with Medal in Seliware
+
+game:GetService("HttpService")
+local v_u_1 = game:GetService("Players")
+local v_u_2 = game:GetService("ReplicatedStorage")
+local v_u_3 = v_u_1.LocalPlayer
+local v4 = v_u_2:WaitForChild("Modules")
+local v_u_5 = require(v4:WaitForChild("TeamsManager"))
+local v6 = require(v4:WaitForChild("FastCast"))
+local v7 = require(v4:WaitForChild("PartCache"))
+local v_u_8 = game:GetService("Debris")
+local v_u_9 = game:GetService("TweenService")
+local v_u_10 = Random.new()
+local v11 = workspace:WaitForChild("Gun_variables")
+local v_u_12 = v11:WaitForChild("BULLET_SPEED").Value
+local v_u_13 = v11:WaitForChild("BULLET_MAXDIST").Value
+local v_u_14 = v11:WaitForChild("BULLET_GRAVITY").Value
+local v_u_15 = v11:WaitForChild("GRENADE_SPEED").Value
+local v_u_16 = v11:WaitForChild("ROCKET_SPEED").Value
+v11.BULLET_SPEED.Changed:Connect(function(p17)
+	-- upvalues: (ref) v_u_12
+	v_u_12 = p17
+end)
+v11.BULLET_MAXDIST.Changed:Connect(function(p18)
+	-- upvalues: (ref) v_u_13
+	v_u_13 = p18
+end)
+v11.BULLET_GRAVITY.Changed:Connect(function(p19)
+	-- upvalues: (ref) v_u_14
+	v_u_14 = p19
+end)
+v11.GRENADE_SPEED.Changed:Connect(function(p20)
+	-- upvalues: (ref) v_u_15
+	v_u_15 = p20
+end)
+v11.ROCKET_SPEED.Changed:Connect(function(p21)
+	-- upvalues: (ref) v_u_16
+	v_u_16 = p21
+end)
+local v22 = {}
+require(v4:WaitForChild("Network")).listenerBatched(v22)
+local v_u_23 = v22
+local v_u_24 = {
+	["Brick"] = "Concrete",
+	["Slate"] = "Concrete",
+	["Granite"] = "Concrete",
+	["DiamondPlate"] = "Metal",
+	["CorrodedMetal"] = "Metal",
+	["Foil"] = "Metal",
+	["Marble"] = "Grass",
+	["SmoothPlastic"] = "Metal",
+	["Plastic"] = "Metal",
+	["WoodPlanks"] = "Wood",
+	["Glass"] = "Neon",
+	["Ice"] = "Neon"
+}
+task.spawn(function()
+	if shared.settingsAPI.getSetting("hqbullets", false) then
+		print("removin")
+		for _, v25 in script.Bullet:GetChildren() do
+			if not v25:IsA("Light") then
+				v25:Destroy()
+			end
+		end
+	end
+end)
+local v_u_26 = v6.new()
+v6.DebugLogging = false
+v6.VisualizeCasts = false
+function CanRayPierce(p27, p28, _) -- name: CanRayPierce
+	local v29 = p28.Instance
+	if v29:GetAttribute("_bulletignore") then
+		return true
+	end
+	if v29:HasTag("Impenetrable") then
+		p27.UserData.HitImpenetrable = v29.Parent
+		return false
+	end
+	if v29.Name == "vrheadhitbox" then
+		return false
+	end
+	local v30 = v29.Parent:FindFirstChild("Humanoid")
+	if not v29.Parent:FindFirstChild("Humanoid") then
+		return not v29.CanCollide and true or (v29.Transparency == 1 and true or (v29:FindFirstAncestorWhichIsA("Accoutrement") and true or false))
+	end
+	p27.UserData.HitHumanoid = v30
+	return false
+end
+local v_u_31 = require(v_u_2.Modules:WaitForChild("GetModel"))
+local v32 = {
+	workspace:WaitForChild("viewmodels"),
+	workspace.attachments,
+	workspace.Round.Ragdolls,
+	workspace.Round.Items
+}
+local v_u_33 = RaycastParams.new()
+v_u_33.FilterType = Enum.RaycastFilterType.Exclude
+v_u_33.FilterDescendantsInstances = { v_u_3.Character, v32 }
+v_u_33.IgnoreWater = true
+v_u_3.CharacterAdded:Connect(function(p34)
+	-- upvalues: (copy) v_u_33
+	local v35 = v_u_33.FilterDescendantsInstances
+	v35[1] = p34
+	v_u_33.FilterDescendantsInstances = v35
+end)
+local v_u_36 = v7.new(script.Bullet, 25, workspace.Bullets)
+local v_u_37 = v7.new(script.RailgunBullet, 2, workspace.Bullets)
+local v_u_38 = v7.new(v_u_2:WaitForChild("projectile_grenade"), 6, workspace.Bullets)
+local v_u_39 = v7.new(v_u_2:WaitForChild("projectile_rocket"), 2, workspace.Bullets)
+local v_u_40 = v6.newBehavior()
+function v_u_40.CanPierceFunction(p41, p42, p43) -- name: CanRayPierceWrapped
+	-- upvalues: (copy) v_u_31
+	local v44 = CanRayPierce(p41, p42, p43)
+	if not v44 then
+		local v45 = p41.UserData
+		if v45.Penetration then
+			local v46 = p42.Instance
+			local v47 = v_u_31(v46, workspace.Round.Doors) or (v_u_31(v46, workspace.Round.Breakables) or v_u_31(v46, workspace.PlayerCharacters, "PlayerContainer"))
+			if v47 then
+				p41.RayInfo.Parameters:AddToFilter(v47)
+				v45.Penetration = v45.Penetration - 1
+				if v45.Penetration >= 0 then
+					ProcessHit(p41, p42, p43)
+					return true
+				end
+			end
+		end
+	end
+	return v44
+end
+v_u_40.CosmeticBulletProvider = v_u_36
+v_u_40.RaycastParams = v_u_33
+v_u_40.AutoIgnoreContainer = true
+v_u_40.MaxDistance = v_u_13
+local function v_u_57(p48) -- name: ConfigureToTool
+	-- upvalues: (ref) v_u_12, (ref) v_u_14, (copy) v_u_40, (copy) v_u_39, (ref) v_u_16, (copy) v_u_38, (ref) v_u_15, (copy) v_u_37, (copy) v_u_36, (copy) v_u_33
+	local v49 = v_u_12
+	local v50 = v_u_14
+	local v51 = true
+	local v52 = p48:GetAttribute("RPG")
+	local v53 = p48:GetAttribute("GrenadeLauncher")
+	local v54 = false
+	local v55 = true
+	if v52 then
+		v_u_40.CosmeticBulletProvider = v_u_39
+		v49 = v_u_16
+		v50 = Vector3.new(0, -10, 0)
+	elseif v53 then
+		v_u_40.CosmeticBulletProvider = v_u_38
+		v49 = v_u_15
+		v50 = Vector3.new(0, -60, 0)
+	else
+		v54 = p48:GetAttribute("Heal") and true or v54
+		v55 = p48.Damage.Value > 0
+		v51 = false
+		if p48.Name == "Railgun" then
+			v_u_40.CosmeticBulletProvider = v_u_37
+		else
+			v_u_40.CosmeticBulletProvider = v_u_36
+		end
+	end
+	local v56 = p48:GetAttribute("Velocity") or v49
+	v_u_33.CollisionGroup = p48:GetAttribute("CollisionGroup") or "Default"
+	return v56, v50, v51, v53, v52, p48:GetAttribute("Penetration"), v55, v54
+end
+local function v_u_62(p58, p59) -- name: ToggleCosmeticBulletVisuals
+	local v60 = p59 and 0 or 1
+	p58.Transparency = v60
+	for _, v61 in p58:GetChildren() do
+		if v61:IsA("Trail") or v61:IsA("Beam") then
+			v61.Enabled = p59
+		elseif v61:IsA("BasePart") then
+			v61.Transparency = v60
+		end
+	end
+end
+local function v91(p_u_63, p_u_64, p_u_65, p_u_66) -- name: Fire
+	-- upvalues: (copy) v_u_10, (copy) v_u_57, (copy) v_u_40, (copy) v_u_1, (ref) v_u_12, (ref) v_u_23, (ref) v_u_13, (copy) v_u_26, (copy) v_u_3, (copy) v_u_62
+	local _, v90 = pcall(function()
+		-- upvalues: (ref) p_u_64, (ref) v_u_10, (copy) p_u_66, (ref) v_u_57, (copy) p_u_65, (ref) v_u_40, (ref) v_u_1, (ref) v_u_12, (ref) v_u_23, (copy) p_u_63, (ref) v_u_13, (ref) v_u_26, (ref) v_u_3, (ref) v_u_62
+		local v67 = CFrame.new(Vector3.new(0, 0, 0), p_u_64)
+		local v68 = v_u_10:NextNumber(0, 360)
+		local v69 = math.rad(v68)
+		local v70 = math.sin(v69)
+		local v71 = math.cos(v69)
+		local v72 = Vector3.new(v70, v71).Unit
+		local v73 = p_u_66.Y
+		local v74 = v_u_10:NextNumber(-1, 1)
+		local v75 = v72 * (math.sign(v74) * math.abs(v74) ^ v73) * p_u_66.X
+		local v76 = CFrame.fromOrientation
+		local v77 = v75.X
+		local v78 = math.rad(v77)
+		local v79 = v75.Y
+		local v80 = (v67 * v76(v78, math.rad(v79), 0)).LookVector
+		local v81, v82, v83, v84, v85, v86, v87, v88 = v_u_57(p_u_65)
+		v_u_40.Acceleration = v82
+		if workspace.GunKnockBack.Value then
+			v_u_1.LocalPlayer.Character.HumanoidRootPart:ApplyImpulse(-v80 * 80)
+		end
+		p_u_64 = (v80 * v_u_12).Unit
+		v_u_23.Shoot:SendServer(p_u_63, p_u_64 * (v_u_13 + v81), p_u_65.Name, v84, v85)
+		local v89 = v_u_26:Fire(p_u_63, p_u_64, v81, v_u_40)
+		v89.UserData.OriginDirection = p_u_64
+		v89.UserData.OriginPosition = p_u_63
+		v89.UserData.ToolName = p_u_65.Name
+		v89.UserData.Name = v85 and "Rocket" or (v84 and "Grenade" or "Bullet")
+		v89.UserData.Explosive = v83
+		v89.UserData.Player = v_u_3
+		v89.UserData.Penetration = v86
+		v89.UserData.CanDamage = v87
+		v89.UserData.CanHeal = v88
+		v89.UserData.WaitToggleDistance = 8
+		v_u_62(v89.RayInfo.CosmeticBulletObject, false)
+	end)
+	if v90 then
+		warn((("ERROR WHILE SHOOTING: %*"):format(v90)))
+	end
+end
+local function v121(p_u_92, p_u_93, p_u_94, p_u_95, p_u_96) -- name: FireShotgun
+	-- upvalues: (copy) v_u_57, (copy) v_u_40, (copy) v_u_10, (copy) v_u_1, (ref) v_u_13, (copy) v_u_26, (copy) v_u_3, (copy) v_u_62, (ref) v_u_23
+	local _, v120 = pcall(function()
+		-- upvalues: (ref) v_u_57, (copy) p_u_94, (ref) v_u_40, (copy) p_u_93, (copy) p_u_96, (ref) v_u_10, (copy) p_u_95, (ref) v_u_1, (ref) v_u_13, (ref) v_u_26, (copy) p_u_92, (ref) v_u_3, (ref) v_u_62, (ref) v_u_23
+		local v97, v98, _, _, _, v99, v100, v101 = v_u_57(p_u_94)
+		v_u_40.Acceleration = v98
+		local v102 = CFrame.new(Vector3.new(0, 0, 0), p_u_93)
+		local v103 = p_u_94.Name
+		local v104 = {}
+		for v105 = 1, p_u_96 do
+			local v106 = v_u_10:NextNumber(0, 360)
+			local v107 = math.rad(v106)
+			local v108 = math.sin(v107)
+			local v109 = math.cos(v107)
+			local v110 = Vector3.new(v108, v109).Unit
+			local v111 = p_u_95.Y
+			local v112 = v_u_10:NextNumber(-1, 1)
+			local v113 = v110 * (math.sign(v112) * math.abs(v112) ^ v111) * p_u_95.X
+			local v114 = CFrame.fromOrientation
+			local v115 = v113.X
+			local v116 = math.rad(v115)
+			local v117 = v113.Y
+			local v118 = (v102 * v114(v116, math.rad(v117), 0)).LookVector
+			if workspace.GunKnockBack.Value then
+				v_u_1.LocalPlayer.Character.HumanoidRootPart:ApplyImpulse(-v118 * 80)
+			end
+			v104[v105] = v118 * (v_u_13 + v97)
+			local v119 = v_u_26:Fire(p_u_92, v118, v97, v_u_40)
+			v119.UserData.OriginDirection = v118
+			v119.UserData.OriginPosition = p_u_92
+			v119.UserData.ToolName = v103
+			v119.UserData.Name = "Bullet"
+			v119.UserData.Player = v_u_3
+			v119.UserData.Penetration = v99
+			v119.UserData.CanDamage = v100
+			v119.UserData.CanHeal = v101
+			v119.UserData.WaitToggleDistance = 8
+			v_u_62(v119.RayInfo.CosmeticBulletObject, false)
+		end
+		v_u_23.ShootShotgun:SendServer(p_u_92, v104, v103)
+	end)
+	if v120 then
+		warn((("ERROR WHILE SHOOTING SHOTGUN: %*"):format(v120)))
+	end
+end
+local v_u_122 = false
+task.spawn(function()
+	-- upvalues: (ref) v_u_122
+	v_u_122 = shared.settingsAPI.getSetting("bulletholes", false)
+end)
+local function v_u_135(p123, p124, p125, p126) -- name: MakeParticleFX
+	-- upvalues: (copy) v_u_24, (copy) v_u_10, (copy) v_u_8, (ref) v_u_122, (copy) v_u_9
+	if p126 and (p125 and p124) then
+		local v127 = p126.Name
+		if v_u_24[v127] then
+			v127 = v_u_24[v127]
+		end
+		local v128 = script.BulletImpacts:FindFirstChild(v127)
+		if v128 == nil then
+			v128 = script.BulletImpacts.Metal
+		end
+		if v128 then
+			local v129 = v128:Clone()
+			v129.CFrame = CFrame.lookAt(p124, p124 + p125)
+			if p123 then
+				local v130 = Instance.new("WeldConstraint")
+				v130.Part0 = p123
+				v130.Part1 = v129
+				v130.Parent = v129
+				v129.Anchored = false
+			end
+			v129.Parent = workspace.Bullets
+			local v131 = v129.Sounds:GetChildren()
+			local v132 = v131[v_u_10:NextInteger(1, #v131)]
+			v132.SoundGroup = game:GetService("SoundService").Sfx
+			v132.Parent = v129
+			v129.Sounds:Destroy()
+			v132:Play()
+			v_u_8:AddItem(v129, 5)
+			for _, v133 in pairs(v129:GetChildren()) do
+				if v133:IsA("ParticleEmitter") then
+					v133:Emit()
+				end
+			end
+			if not v_u_122 then
+				return
+			end
+			local v134 = v129.Holes:GetChildren()
+			v129.Decal.Texture = v134[v_u_10:NextInteger(1, #v134)].Texture
+			wait(2)
+			v_u_9:Create(v129.Decal, TweenInfo.new(3), {}):Play()
+		end
+	end
+end
+function ProcessHit(p136, p137, p138) -- name: ProcessHit
+	-- upvalues: (copy) v_u_3, (copy) v_u_1, (copy) v_u_5, (copy) v_u_135, (ref) v_u_23
+	if p136 then
+		if p137 then
+			if p138 then
+				local v139 = p137.Instance
+				local v140 = p137.Position
+				local v141 = p136.UserData
+				local v142 = v141.Player == v_u_3
+				local v143 = false
+				if v141.Explosive or v141.HitImpenetrable then
+					v143 = true
+				else
+					local v144 = v139.Parent
+					if v144.Parent == workspace.Round.Ragdolls then
+						return
+					end
+					local v145 = v141.HitHumanoid
+					if v145 then
+						if v142 and v145.Health > 0 then
+							local v146 = v_u_1:GetPlayerFromCharacter(v144)
+							if v146 then
+								local v147, v148 = v_u_5.CanPlayerBeAttacked(v146, v_u_3)
+								if v141.CanHeal and (not v147 or v148) then
+									shared.hitmarker("Heal")
+									v143 = true
+								elseif v141.CanDamage and v147 then
+									task.spawn(_G.hapticfeedback, Enum.VibrationMotor.RightHand, 0.1, 1)
+									task.spawn(_G.hapticfeedback, Enum.VibrationMotor.Small, 0.1, 0.5)
+									shared.hitmarker(v139.Name)
+									v143 = true
+								end
+							else
+								shared.hitmarker(v139.Name)
+							end
+						end
+					else
+						task.spawn(v_u_135, v139, v140, p137.Normal, p137.Material)
+						v143 = true
+					end
+				end
+				if v142 and v143 then
+					v_u_23.GunHit:SendServer(v141.OriginPosition, v141.OriginDirection, v139, v140, p137.Normal, p137.Material, p138, v141.ToolName, v141.Name)
+				end
+			end
+		else
+			return
+		end
+	else
+		return
+	end
+end
+local v_u_149 = CFrame.Angles(-3.141592653589793, 0, 0)
+local function v155(p_u_150, p_u_151, p_u_152, p_u_153) -- name: OnRayHit
+	-- upvalues: (copy) v_u_62, (copy) v_u_3, (ref) v_u_23
+	local _, _ = pcall(function()
+		-- upvalues: (ref) v_u_62, (copy) p_u_153, (copy) p_u_151, (copy) p_u_150, (ref) v_u_3, (ref) v_u_23, (copy) p_u_152
+		v_u_62(p_u_153, false)
+		local v154 = p_u_151.Instance
+		if p_u_150.UserData.Player == v_u_3 and v154 then
+			if v154.Name == "vrheadhitbox" then
+				shared.hitmarker("Head")
+				v_u_23.TakeDamage:SendServer(300, "VR")
+				return
+			end
+			ProcessHit(p_u_150, p_u_151, p_u_152)
+		end
+	end)
+end
+v_u_23.BulletHole:ClientOnReceive(function(_, p156, p157, p158)
+	-- upvalues: (copy) v_u_135
+	v_u_135(nil, p156, p157, p158)
+end)
+v_u_23.ReplicateRay:ClientOnReceive(function(p159, p160, p161) -- name: replicateray
+	-- upvalues: (copy) v_u_57, (copy) v_u_2, (copy) v_u_40, (copy) v_u_26, (copy) v_u_62
+	if (workspace.CurrentCamera.CFrame.Position - p159).Magnitude <= 300 then
+		local v162, v163, _, v164, v165, v166 = v_u_57(v_u_2.ItemList[p161])
+		v_u_40.Acceleration = v163
+		local v167 = v_u_26:Fire(p159, p160, v162, v_u_40)
+		v167.UserData.Name = v165 and "Rocket" or (v164 and "Grenade" or "Bullet")
+		v167.UserData.Penetration = v166
+		v_u_62(v167.RayInfo.CosmeticBulletObject, true)
+	end
+end)
+v_u_26.LengthChanged:Connect(function(p168, p169, p170, p171, _, p172) -- name: OnRayUpdated
+	-- upvalues: (copy) v_u_62, (copy) v_u_149
+	local v173 = p172.Size.Z / 2
+	local v174 = p168.UserData.WaitToggleDistance
+	if v174 and v174 < p168.StateInfo.DistanceCovered then
+		v_u_62(p172, true)
+		p168.UserData.WaitToggleDistance = nil
+	end
+	local v175 = p170 * (p171 - v173)
+	local v176 = CFrame.lookAt(Vector3.new(0, 0, 0), p170) + (p169 + v175)
+	if p168.UserData.Name == "Grenade" then
+		v176 = v176 * v_u_149
+	end
+	p172.CFrame = v176
+end)
+v_u_26.RayHit:Connect(v155)
+shared.addtoPeriodicCacheOptimize(v_u_33)
+return {
+	["Fire"] = v91,
+	["FireShotgun"] = v121
+}

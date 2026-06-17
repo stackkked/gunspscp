@@ -1,0 +1,38 @@
+-- Original Path: ReplicatedStorage‌.Modules.RaycastHitboxV4
+-- ClassName: ModuleScript
+-- IsNil: false
+
+-- Decompiled with Medal in Seliware
+
+local v_u_1 = game:GetService("CollectionService")
+local v_u_2 = require(script.HitboxCaster)
+local v_u_3 = require(script.Signal)
+local v_u_4 = {}
+v_u_4.__index = v_u_4
+v_u_4.__type = "RaycastHitboxModule"
+v_u_4.DetectionMode = {}
+function v_u_4.new(p5) -- name: new
+	-- upvalues: (copy) v_u_1, (copy) v_u_2, (copy) v_u_4, (copy) v_u_3
+	if p5 and v_u_1:HasTag(p5, "_RaycastHitboxV4Managed") then
+		return v_u_2:_FindHitbox(p5)
+	end
+	local v6 = {
+		["DetectionMode"] = v_u_4.DetectionMode.Default,
+		["HitboxRaycastPoints"] = {},
+		["HitboxObject"] = p5,
+		["HitboxHitList"] = {},
+		["OnUpdate"] = v_u_3:Create(),
+		["OnHit"] = v_u_3:Create()
+	}
+	local v7 = v_u_2
+	local v8 = setmetatable(v6, v7)
+	v8:_Init()
+	return v8
+end
+function v_u_4.GetHitbox(_, p9) -- name: GetHitbox
+	-- upvalues: (copy) v_u_2
+	if p9 then
+		return v_u_2:_FindHitbox(p9)
+	end
+end
+return v_u_4

@@ -1,0 +1,624 @@
+-- Original Path: 👌👌👌‌.ezekielterminal.PlayerScripts.ClientMain.Modules.Guns
+-- ClassName: ModuleScript
+-- IsNil: false
+
+-- Decompiled with Medal in Seliware
+
+local v_u_1 = game:GetService("Players").LocalPlayer
+local v_u_2 = game:GetService("ReplicatedStorage")
+local v_u_3 = game:GetService("TweenService")
+local v4 = game:GetService("VRService")
+local v_u_5 = game:GetService("UserInputService")
+local v_u_6 = require(v_u_2.Modules.SharedSettings)
+local v7 = require(v_u_2.Modules.Network)
+local v_u_8 = require(v_u_2.Modules.BulletHandler_client)
+local v_u_9 = require(v_u_2.Modules.TeamsManager)
+local v_u_10 = require(script.Parent.MovementManager)
+local v_u_11 = require(script.Parent.Interaction)
+local v_u_12 = require(script.Parent.VRController)
+local v_u_13 = require(script.Parent.Functions.PlaySound)
+local v14 = require(script.Parent.Functions.Guns.HapticFeedback)
+_G.hapticfeedback = v14
+local v_u_15 = require(script.Parent.Functions.Guns.EjectBullet)
+local v_u_16 = require(script.Parent.Functions.Guns.Flash)
+local v_u_17 = require(script.Parent.Functions.Guns.ReloadMisc)
+local v18 = {}
+v7.listenerBatched(v18)
+Remotes = v18
+local v_u_19 = v7.listener("StartCharging")
+local v_u_20 = v4.VREnabled
+local _ = v_u_6.ui
+local v_u_21 = v_u_6.mainuiframe
+local v_u_22 = "idle"
+local v_u_23 = false
+local v_u_24 = {}
+local v_u_25 = {}
+local v_u_26 = {
+	["ammocache"] = v_u_24,
+	["myammo"] = v_u_25,
+	["yieldthread"] = nil,
+	["xAngleRecoil"] = 0,
+	["yAngleRecoil"] = 0
+}
+Random.new()
+local v_u_27 = {}
+local v_u_28 = {}
+local v_u_29 = {}
+local v_u_30, v_u_31
+if v_u_20 then
+	v_u_30 = {
+		nil,
+		workspace.viewmodels,
+		workspace.attachments,
+		workspace.Bullets,
+		v_u_12.Model
+	}
+	v_u_31 = RaycastParams.new()
+	v_u_31.FilterType = Enum.RaycastFilterType.Exclude
+	v_u_31.FilterDescendantsInstances = v_u_30
+	v_u_31.RespectCanCollide = true
+	shared.addtoPeriodicCacheOptimize(v_u_31, v_u_30)
+else
+	v_u_30 = nil
+	v_u_31 = nil
+end
+local v_u_32 = v_u_6.aimval
+function shoot(p33, p_u_34, _) -- name: shoot
+	-- upvalues: (copy) v_u_26, (copy) v_u_27, (copy) v_u_12, (copy) v_u_24, (copy) v_u_20, (copy) v_u_5, (ref) v_u_30, (copy) v_u_1, (ref) v_u_31, (copy) v_u_2, (copy) v_u_28, (copy) v_u_29, (copy) v_u_13, (copy) v_u_16, (copy) v_u_15, (copy) v_u_10, (copy) v_u_8
+	if v_u_26.canUse("shooting") or not p_u_34.Parent then
+		local v35 = p_u_34.Parent.Humanoid
+		if v_u_27[p_u_34.Name] then
+			return
+		elseif v35.Health <= 0 then
+			return
+		elseif v_u_12.vrBoltState == 1 then
+			return
+		else
+			local v_u_36 = workspace.viewmodels:FindFirstChild(p_u_34.Name)
+			if v_u_36 then
+				local v37, v38 = v_u_26.getRecoilMultiplier()
+				local v39, v40 = v_u_26.getSpreadMultiplier()
+				local v41 = (p_u_34.Recoil.Value + v38) * v37
+				if v_u_24[p_u_34] >= 1 then
+					local v42 = workspace.CurrentCamera.CFrame
+					local v43 = v42.LookVector
+					local v44 = v42.Position
+					if v_u_20 then
+						v_u_30[1] = v_u_1.Character
+						v43 = v_u_12.vrLaser.CFrame.LookVector
+						v44 = workspace.viewmodels[p_u_34.Name].Model.FirePart.CFrame.Position
+						local v45 = v_u_12.RightArm.CFrame
+						Ray.new(v45.p, CFrame.new(v45.p, v44).LookVector * (v45.p - v44).Magnitude)
+						local v46 = v45.Position
+						local v47 = v44 - v46
+						local v48 = workspace:Raycast(v46, v47, v_u_31)
+						if v48 then
+							local v49 = v48.Instance
+							if v49.Transparency == 1 then
+								local v50 = v_u_30
+								table.insert(v50, v49)
+								v_u_31.FilterDescendantsInstances = v_u_30
+							else
+								script.error:Play()
+								local v51 = v_u_2.noshoot:Clone()
+								game:GetService("Debris"):AddItem(v51, p_u_34.Firerate.Value)
+								v51.Parent = workspace.viewmodels
+								v51.Position = v48.Position
+								wait(p_u_34.Firerate.Value)
+							end
+						end
+					end
+					v_u_27[p_u_34.Name] = true
+					local v52 = v_u_26
+					v52.yAngleRecoil = v52.yAngleRecoil + math.random(3, 4) * v41
+					local v53 = v_u_26
+					v53.xAngleRecoil = v53.xAngleRecoil + math.random(-1, 1) * v41
+					local v54 = v_u_24
+					v54[p_u_34] = v54[p_u_34] - 1
+					local v55 = p_u_34:GetAttribute("Shotgun") ~= nil
+					coroutine.wrap(function()
+						-- upvalues: (ref) v_u_20, (ref) v_u_28, (copy) p_u_34, (copy) v_u_36, (ref) v_u_29
+						if not v_u_20 then
+							if v_u_28[p_u_34.Name] == nil then
+								pcall(function()
+									-- upvalues: (ref) v_u_36, (ref) p_u_34, (ref) v_u_28
+									local v56 = v_u_36.Humanoid:LoadAnimation(workspace.viewmodels[p_u_34.Name].shoot)
+									repeat
+										task.wait()
+									until v56.Length > 0
+									v56:Play(0.01, 1)
+									v_u_28[p_u_34.Name] = v56
+								end)
+							else
+								v_u_28[p_u_34.Name]:Play(0.01, 1)
+							end
+						end
+						pcall(function()
+							-- upvalues: (ref) v_u_29, (ref) p_u_34
+							v_u_29[p_u_34.Name]:Stop()
+						end)
+					end)()
+					v_u_13.playSound(p_u_34.FirePart.sound)
+					v_u_16(p33)
+					task.spawn(v_u_15, v_u_36:FindFirstChild("eject_bullet"))
+					local v57 = v_u_10.IsGrounded() and 1.25 or 0.6
+					local v58 = (p_u_34.Spread.Value + v40) * v39
+					local v59 = Vector3.new(v58, v57, 0)
+					if v55 then
+						local v60 = p_u_34:FindFirstChild("Pellets")
+						local v61 = not v60 and 7 or v60.Value
+						v_u_8.FireShotgun(v44, v43, p_u_34, v59, v61)
+					else
+						v_u_8.Fire(v44, v43, p_u_34, v59)
+					end
+					task.wait(p_u_34.Firerate.Value)
+					v_u_27[p_u_34.Name] = nil
+					return true
+				end
+				if v_u_20 == true and v_u_36:FindFirstChild("VrMagValue") == nil or v_u_5.TouchEnabled then
+					v_u_26.reload()
+				elseif p_u_34.Click.Playing == false then
+					p_u_34.Click:Play()
+				end
+				wait(p_u_34.Firerate.Value)
+			end
+		end
+	else
+		return
+	end
+end
+function v_u_26.getState() -- name: getState
+	-- upvalues: (ref) v_u_22
+	return v_u_22
+end
+function v_u_26.setState(p62, p63) -- name: setState
+	-- upvalues: (ref) v_u_22, (ref) v_u_23, (copy) v_u_26
+	if p62 == v_u_22 then
+		return true
+	end
+	if v_u_23 and not p63 then
+		return false
+	end
+	if v_u_22 == "inspecting" then
+		v_u_26.stopInspect()
+	end
+	v_u_22 = p62
+	return true
+end
+function v_u_26.transformState(p64, p65, p66) -- name: transformState
+	-- upvalues: (ref) v_u_22, (copy) v_u_26
+	if v_u_22 == p64 then
+		return v_u_26.setState(p65, p66)
+	else
+		return false
+	end
+end
+function v_u_26.canUse(p67) -- name: canUse
+	-- upvalues: (ref) v_u_22
+	if v_u_22 == "idle" or v_u_22 == "inspecting" then
+		return true
+	elseif p67 then
+		return p67 == v_u_22
+	else
+		return false
+	end
+end
+function v_u_26.getSpreadMultiplier() -- name: getSpreadMultiplier
+	-- upvalues: (copy) v_u_32, (copy) v_u_10, (copy) v_u_20
+	local v68 = 1 - v_u_32.Value * 0.2
+	local v69 = 0
+	if v_u_10.IsGrounded() then
+		if v_u_10.GetState() == "Crouching" then
+			v68 = v68 - 0.15
+		end
+	else
+		v68 = v68 + 1.2
+		v69 = 0.15
+	end
+	if v_u_20 then
+		return v68, v69
+	end
+	local v70 = v_u_10.GetVelocity() - 20
+	return v68 + math.max(v70, 0) / 50, v69
+end
+function v_u_26.getRecoilMultiplier() -- name: getRecoilMultiplier
+	-- upvalues: (copy) v_u_32, (copy) v_u_10, (copy) v_u_5
+	local v71 = 1 - v_u_32.Value * 0.15
+	local v72 = 0
+	if v_u_10.IsGrounded() then
+		if v_u_10.GetState() == "Crouching" then
+			v71 = v71 - 0.1
+		end
+	else
+		v71 = v71 + 1.2
+		v72 = 0.15
+	end
+	local v73 = v_u_10.GetVelocity() - 20
+	local v74 = (v71 + math.max(v73, 0) / 60) * 1.2
+	if not v_u_5.MouseEnabled then
+		v74 = v74 * 0.4166666666666667
+	end
+	return v74, v72
+end
+local v_u_75 = {
+	["checkfunc"] = function() -- name: checkfunc
+		-- upvalues: (ref) v_u_22
+		return v_u_22 == "shooting"
+	end
+}
+function v_u_26.useGun() -- name: useGun
+	-- upvalues: (copy) v_u_26, (copy) v_u_12, (copy) v_u_21, (copy) v_u_6, (ref) v_u_23, (ref) v_u_22, (copy) v_u_24, (copy) v_u_3, (copy) v_u_19, (copy) v_u_75, (copy) v_u_11
+	if v_u_26.canUse() then
+		if v_u_12.Enabled or not v_u_21.Admin.Visible then
+			local v_u_76 = v_u_6.CurrentTool
+			if v_u_76 then
+				local v_u_77 = workspace.viewmodels[v_u_76.Name].Model.FirePart
+				if v_u_26.setState("shooting") then
+					v_u_23 = true
+					local v104, v105 = pcall(function()
+						-- upvalues: (copy) v_u_76, (copy) v_u_77, (ref) v_u_22, (ref) v_u_26, (ref) v_u_24, (ref) v_u_3, (ref) v_u_19, (ref) v_u_75, (ref) v_u_11, (ref) v_u_6
+						if v_u_76.Mode.Value == "Semi" then
+							shoot(v_u_77, v_u_76)
+							return
+						end
+						if v_u_76.Mode.Value == "Burst" then
+							local v78 = v_u_76:FindFirstChild("BurstControlled")
+							local v79 = v_u_76:FindFirstChild("BurstAmount")
+							local v80 = not v79 and 3 or v79.Value
+							if v78 then
+								v78 = v78.Value
+							end
+							for _ = 1, v80 do
+								if v78 and v_u_22 ~= "shooting" then
+									break
+								end
+								shoot(v_u_77, v_u_76)
+							end
+							local v81 = v_u_76:FindFirstChild("BurstCooldown")
+							if v81 then
+								v_u_26.setState("cooldown", true)
+								task.wait(v81.Value)
+								return
+							end
+						else
+							if v_u_76.Mode.Value == "Charge" then
+								if v_u_24[v_u_76] <= 0 then
+									return
+								else
+									local v_u_82 = v_u_76:GetAttribute("ChargeDuration") or 3
+									task.spawn(function()
+										-- upvalues: (ref) v_u_76, (copy) v_u_82, (ref) v_u_22, (ref) v_u_3
+										local v83 = workspace.viewmodels.Railgun.Model
+										local v84 = v83.Handle:FindFirstChild("ChargeAtt")
+										if v84 then
+											v84 = v84:FindFirstChildWhichIsA("ParticleEmitter")
+										end
+										if v84 then
+											v84.Enabled = true
+											task.spawn(function()
+												-- upvalues: (ref) v_u_76
+												local v85 = v_u_76.Handle.ChargeAtt:FindFirstChildWhichIsA("ParticleEmitter")
+												v85.Changed:Wait()
+												v85.Enabled = false
+											end)
+										end
+										local v86 = v83:FindFirstChild("ChargeIndicators")
+										local v87
+										if v86 then
+											v87 = 0
+											v86 = {}
+											for _, v88 in v86:GetChildren() do
+												local v89 = v88.Name
+												local v90 = tonumber(v89)
+												if v90 then
+													v87 = v87 + 1
+													v86[v90] = v88
+												end
+											end
+										else
+											v87 = nil
+										end
+										if v87 then
+											local v91 = table.create(v87)
+											local v92 = v_u_82 / v87
+											local v93 = TweenInfo.new(v92, Enum.EasingStyle.Quart)
+											local v94 = 0
+											while true do
+												v94 = v94 + task.wait(0.125)
+												if v_u_76 ~= v_u_76 or v_u_22 ~= "shooting" then
+													break
+												end
+												local v95 = v94 / v92
+												local v96 = math.floor(v95) + 1
+												local v97 = v86[v96]
+												if v97 and not v91[v96] then
+													v97:SetAttribute("ogColor", v97.Color)
+													v91[v96] = v97.Color
+													local v98 = v_u_3:Create(v97, v93, {
+														["Color"] = v97:GetAttribute("Color") or Color3.fromRGB(255, 255, 255)
+													})
+													v98:Play()
+													v91[v96] = v98
+												end
+												if v_u_82 + 2.5 < v94 then
+													break
+												end
+											end
+											for v99, v100 in v91 do
+												local v101 = v86[v99]
+												v100:Cancel()
+												v101.Color = v101:GetAttribute("ogColor")
+											end
+										end
+										if v84 then
+											v84.Enabled = false
+										end
+									end)
+									v_u_19:SendServer(true)
+									v_u_75.overcharge = v_u_76:GetAttribute("Overcharge") or 2.5
+									local v102, v103 = v_u_11.doProgressBar(nil, v_u_82, v_u_75)
+									v_u_19:SendServer(false)
+									if v102 and v_u_6.CurrentTool == v_u_76 then
+										shoot(v_u_77, v_u_76, v103)
+									else
+										v_u_26.setState("idle", true)
+									end
+								end
+							end
+							while v_u_22 == "shooting" and (v_u_76.Parent and v_u_6.CurrentTool == v_u_76) do
+								if not shoot(v_u_77, v_u_76) then
+									task.wait()
+								end
+							end
+						end
+					end)
+					if not v104 then
+						warn((("[GUNS] %*"):format(v105)))
+					end
+					v_u_23 = false
+					v_u_26.setState("idle")
+				end
+			else
+				return
+			end
+		else
+			return
+		end
+	else
+		return
+	end
+end
+local v_u_106 = nil
+function v_u_26.inspect(p107) -- name: inspect
+	-- upvalues: (copy) v_u_26, (copy) v_u_29, (ref) v_u_106, (ref) v_u_22
+	if v_u_26.canUse() then
+		if v_u_29[p107] then
+			v_u_106 = p107
+			v_u_26.setState("inspecting")
+			v_u_29[p107]:Play(0, 0.7)
+		elseif v_u_29[p107] == nil then
+			local v108 = workspace.viewmodels[p107]
+			local v109 = v108:FindFirstChild("inspect")
+			v_u_29[p107] = false
+			if v109 then
+				v_u_106 = p107
+				v_u_26.setState("inspecting")
+				local v110 = v108.Humanoid:LoadAnimation(v109)
+				if v110.Length == 0 then
+					repeat
+						task.wait()
+					until v110.Length > 0
+				end
+				v_u_29[p107] = v110
+				if v_u_22 ~= "inspecting" then
+					return
+				end
+				v110:Play(0, 0.7)
+			end
+		end
+	else
+		return
+	end
+end
+function v_u_26.stopInspect() -- name: stopInspect
+	-- upvalues: (copy) v_u_29, (ref) v_u_106
+	local v111 = v_u_29[v_u_106]
+	if v111 then
+		v111:Stop()
+	end
+	v_u_106 = nil
+end
+function v_u_26.reload() -- name: reload
+	-- upvalues: (copy) v_u_26, (ref) v_u_23, (copy) v_u_6, (copy) v_u_24, (copy) v_u_9, (copy) v_u_3, (copy) v_u_32, (ref) v_u_22, (copy) v_u_17, (copy) v_u_25
+	if v_u_26.canUse() then
+		if v_u_23 then
+			return
+		elseif v_u_26.getState() == "reloading" then
+			return
+		else
+			local v_u_112 = v_u_6.CurrentTool
+			if v_u_112 then
+				local v113 = v_u_112.Parent
+				if v_u_112:FindFirstChild("Ammo") == nil then
+					return
+				elseif v_u_24[v_u_112] >= v_u_112.ClipSize.Value then
+					return
+				else
+					local v114 = v113.Ammo:FindFirstChild(v_u_112.AmmoType.Value)
+					if v114 == nil then
+						return
+					else
+						local v115 = workspace.InfniteAmmo.Value or v_u_9.localGet("HasInfiniteAmmo")
+						if v115 or v114.Value > 0 then
+							local _ = v114.Value
+							local v_u_116 = workspace.viewmodels[v_u_112.Name]
+							local v117 = v114.Value
+							local v118 = v_u_112.ClipSize.Value - v_u_24[v_u_112]
+							local v119 = math.clamp(v117, 0, v118)
+							if v115 then
+								v119 = v_u_112.ClipSize.Value - v_u_24[v_u_112]
+							end
+							v_u_26.setState("reloading")
+							v_u_3:Create(v_u_32, TweenInfo.new(0.25), {}):Play()
+							local v_u_120 = nil
+							local v_u_121 = nil
+							local v_u_122 = nil
+							local v_u_123 = nil
+							local v_u_124 = v_u_116:FindFirstChild("reload")
+							if v_u_124 then
+								pcall(function()
+									-- upvalues: (ref) v_u_120, (copy) v_u_116, (copy) v_u_124, (ref) v_u_22
+									v_u_120 = v_u_116.Humanoid:LoadAnimation(v_u_124)
+									repeat
+										task.wait()
+									until v_u_120.Length > 0
+									if v_u_22 ~= "reloading" then
+									end
+								end)
+							else
+								v_u_121 = v_u_116:FindFirstChild("Start")
+								v_u_122 = v_u_116:FindFirstChild("In")
+								v_u_123 = v_u_116:FindFirstChild("Last")
+								if v_u_121 and (v_u_122 and v_u_123) then
+									pcall(function()
+										-- upvalues: (ref) v_u_121, (copy) v_u_116, (ref) v_u_122, (ref) v_u_123
+										v_u_121 = v_u_116.Humanoid:LoadAnimation(v_u_121)
+										v_u_122 = v_u_116.Humanoid:LoadAnimation(v_u_122)
+										v_u_123 = v_u_116.Humanoid:LoadAnimation(v_u_123)
+										repeat
+											task.wait()
+										until v_u_121.Length > 0 and (v_u_122.Length > 0 and v_u_123.Length > 0)
+									end)
+									if v_u_22 ~= "reloading" then
+										return
+									end
+								else
+									v_u_121 = nil
+									v_u_122 = nil
+									v_u_123 = nil
+								end
+							end
+							local v125 = v_u_6.reloadanim
+							local v126 = false
+							if v_u_6.CurrentTool == v_u_112 then
+								if v_u_121 then
+									v126 = true
+									v_u_17.reloadPlayAnimAndWait(v_u_121, v_u_112)
+									if v_u_6.CurrentTool == v_u_112 then
+										for _ = 1, v119 - 1 do
+											v_u_112.MagIn:Play()
+											v_u_17.reloadPlayAnimAndWait(v_u_122, v_u_112)
+											if v_u_6.CurrentTool == v_u_112 then
+												local v127 = v_u_24
+												local v128 = v_u_24[v_u_112] + 1
+												local v129 = v_u_112.ClipSize.Value
+												v127[v_u_112] = math.clamp(v128, 0, v129)
+												Remotes.Reload:SendServer(v_u_6.CurrentTool, 1)
+												local v130 = v114.Value - 1
+												v114.Value = math.max(v130, 0)
+												v_u_25[v114.Name] = v114.Value
+											end
+										end
+										if v_u_6.CurrentTool ~= v_u_112 then
+											return
+										end
+										v_u_112.MagIn:Play()
+										v_u_17.reloadPlayAnimAndWait(v_u_123, v_u_112)
+										if v_u_6.CurrentTool == v_u_112 then
+											local v131 = v_u_24
+											local v132 = v_u_24[v_u_112] + 1
+											local v133 = v_u_112.ClipSize.Value
+											v131[v_u_112] = math.clamp(v132, 0, v133)
+											Remotes.Reload:SendServer(v_u_6.CurrentTool)
+											local v134 = v114.Value - 1
+											v114.Value = math.max(v134, 0)
+											v_u_25[v114.Name] = v114.Value
+										end
+									end
+								else
+									local v135 = v_u_112.MagOut.TimeLength / v_u_112.MagOut.PlaybackSpeed + v_u_112.MagIn.TimeLength / v_u_112.MagIn.PlaybackSpeed
+									local v136 = v_u_17
+									v_u_17.ReloadStart = tick()
+									v136.ReloadDuration = v135
+									pcall(function()
+										-- upvalues: (copy) v_u_116, (ref) v_u_24, (copy) v_u_112
+										local v137 = v_u_116.eject_bullet
+										local v138 = 1 - v_u_24[v_u_112]
+										v137.Transparency = math.clamp(v138, 0, 1)
+									end)
+									if v125 then
+										v125:Play(0.01, 1, v125.Length / v135)
+									end
+									if v_u_120 then
+										v_u_120:Play(0.001, 1, v_u_120.Length / v135)
+									end
+									local v139 = v_u_112.MagOut.TimeLength / v_u_112.MagOut.PlaybackSpeed
+									v_u_17.reloadWait(v_u_112, v139, v_u_112.MagOut)
+									if v_u_6.CurrentTool == v_u_112 then
+										if v_u_6.CurrentTool == v_u_112 then
+											local v140 = v_u_112.MagIn.TimeLength / v_u_112.MagIn.PlaybackSpeed
+											v_u_17.reloadWait(v_u_112, v140, v_u_112.MagIn)
+											if v_u_6.CurrentTool ~= v_u_112 then
+												if v125 then
+													v125:Stop()
+												end
+												if v_u_120 then
+													v_u_120:Stop()
+												end
+											end
+										end
+									else
+										if v125 then
+											v125:Stop()
+										end
+										if v_u_120 then
+											v_u_120:Stop()
+										end
+									end
+								end
+								if v_u_6.CurrentTool == v_u_112 then
+									if not v126 then
+										local v141 = v_u_24
+										local v142 = v_u_24[v_u_112] + v119
+										local v143 = v_u_112.ClipSize.Value
+										v141[v_u_112] = math.clamp(v142, 0, v143)
+										Remotes.Reload:SendServer(v_u_6.CurrentTool)
+										local v144 = v114.Value - v119
+										v114.Value = math.max(v144, 0)
+										v_u_25[v114.Name] = v114.Value
+									end
+								else
+									if v125 then
+										v125:Stop()
+									end
+									if v_u_120 then
+										v_u_120:Stop()
+									end
+									pcall(function()
+										-- upvalues: (copy) v_u_116, (ref) v_u_24, (copy) v_u_112
+										local v145 = v_u_116.eject_bullet
+										local v146 = 1 - v_u_24[v_u_112]
+										v145.Transparency = math.clamp(v146, 0, 1)
+									end)
+								end
+							end
+							local v147 = v_u_17
+							v_u_17.ReloadStart = nil
+							v147.ReloadDuration = nil
+							v_u_26.setState("idle")
+						end
+					end
+				end
+			else
+				return
+			end
+		end
+	else
+		return
+	end
+end
+function v_u_26.getReloadInfo() -- name: getReloadInfo
+	-- upvalues: (copy) v_u_17
+	return v_u_17.ReloadStart, v_u_17.ReloadDuration
+end
+return v_u_26

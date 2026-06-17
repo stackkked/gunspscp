@@ -1,0 +1,82 @@
+-- Original Path: ReplicatedStorage‌.Modules.AccessManager
+-- ClassName: ModuleScript
+-- IsNil: false
+
+-- Decompiled with Medal in Seliware
+
+local v_u_1 = game:GetService("RunService"):IsServer()
+local v_u_2 = require(script.Accesses)
+local v_u_3 = {}
+local v_u_4 = nil
+for _, v5 in script.Cards:GetDescendants() do
+	if v5:IsA("ModuleScript") then
+		v_u_3[v5.Name] = require(v5)
+	end
+end
+local v_u_21 = {
+	["GetCardAccesses"] = function(p6) -- name: GetCardAccesses
+		-- upvalues: (copy) v_u_3
+		if typeof(p6) == "Instance" then
+			p6 = p6.Name
+		end
+		return v_u_3[p6]
+	end,
+	["GetAccessDisplayName"] = function(p7) -- name: GetAccessDisplayName
+		-- upvalues: (copy) v_u_2
+		return v_u_2.trueAccesses[p7]
+	end,
+	["HasAccess"] = function(p8, p9, p10, p11) -- name: HasAccess
+		-- upvalues: (copy) v_u_21, (copy) v_u_2, (ref) v_u_4, (copy) v_u_1
+		if p9 then
+			local v12
+			if typeof(p9) == "Instance" then
+				v12 = p9.Name
+			else
+				v12 = p9
+				p9 = nil
+			end
+			local v13 = v_u_21.GetCardAccesses(v12)
+			if v13 then
+				local v14 = v_u_2.References[p10] or p10
+				if type(v14) ~= "string" then
+					return
+				end
+				if not v_u_4 and v_u_1 then
+					v_u_4 = require(game.ServerScriptService.ItemHandler)
+				end
+				if p11 and (p8 and (v_u_4 and p9)) then
+					v_u_4.SendItemUsedEvent(p8, p9, v14)
+				end
+				if not v_u_4 and v_u_1 then
+					v_u_4 = require(game.ServerScriptService.ItemHandler)
+				end
+				local v15
+				if v_u_1 then
+					v15 = require(game.ServerScriptService.ItemHandler).DisabledItems[v12]
+				else
+					v15 = false
+				end
+				if v15 then
+					return
+				end
+				local v16 = string.split(v14, "_")
+				local v17 = v13[v16[1]]
+				if v17 then
+					if v17 == true then
+						return true
+					end
+					local v18 = v16[2]
+					local v19 = tonumber(v18)
+					if not v19 then
+						return true
+					end
+					local v20 = tonumber(v17)
+					if v20 and v19 <= v20 then
+						return true
+					end
+				end
+			end
+		end
+	end
+}
+return v_u_21

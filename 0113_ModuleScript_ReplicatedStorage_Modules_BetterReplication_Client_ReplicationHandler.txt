@@ -1,0 +1,67 @@
+-- Original Path: ReplicatedStorage‌.Modules.BetterReplication.Client.ReplicationHandler
+-- ClassName: ModuleScript
+-- IsNil: false
+
+-- Decompiled with Medal in Seliware
+
+local v1 = game:GetService("Players")
+local v2 = game:GetService("ReplicatedStorage")
+local v3 = script.Parent.Parent
+local v4 = require(v3.Config)
+local v5 = require(v3.Lib.BufferUtils)
+local v_u_6 = require(v3.Lib.Utils)
+local v_u_7 = require(v2.Modules.SharedSettings)
+local v_u_8 = v3.Remotes.FromClient
+local v_u_9 = v1.LocalPlayer
+local v_u_10 = nil
+local v_u_11 = CFrame.identity
+local v_u_12 = v5.writeFromClientSimplified
+if v4.makeRagdollFriendly then
+	v_u_12 = v5.writeFromClient
+end
+local v_u_13 = v4.optimizeInactivity
+local function v_u_15() -- name: update
+	-- upvalues: (ref) v_u_10, (copy) v_u_7, (copy) v_u_13, (ref) v_u_11, (copy) v_u_8, (ref) v_u_12
+	if v_u_10 then
+		if v_u_7.GetTeamInfo() ~= "LOBBY" then
+			local v14 = v_u_10.CFrame
+			if not (v_u_13 and v_u_11:FuzzyEq(v14, 0.01)) then
+				v_u_11 = v14
+				v_u_8:FireServer(v_u_12(os.clock(), v14))
+			end
+		end
+	else
+		return
+	end
+end
+local v16 = {}
+local v_u_17 = false
+function v16.start() -- name: start
+	-- upvalues: (ref) v_u_17, (copy) v_u_9, (ref) v_u_10, (copy) v_u_15, (copy) v_u_6
+	if not v_u_17 then
+		v_u_17 = true
+		local v_u_18 = nil
+		local function v20() -- name: CharacterChanged
+			-- upvalues: (ref) v_u_18, (ref) v_u_9, (ref) v_u_10
+			if v_u_18 then
+				v_u_18:Disconnect()
+				v_u_18 = nil
+			end
+			local v_u_19 = v_u_9.Character
+			if v_u_19 then
+				v_u_10 = v_u_19.PrimaryPart
+				v_u_18 = v_u_19:GetPropertyChangedSignal("PrimaryPart"):Connect(function()
+					-- upvalues: (ref) v_u_10, (copy) v_u_19
+					v_u_10 = v_u_19.PrimaryPart
+				end)
+			else
+				v_u_10 = nil
+			end
+		end
+		v_u_9:GetPropertyChangedSignal("Character"):Connect(v20)
+		v20()
+		v_u_15()
+		v_u_6.FrequencyPostSimulation(v_u_15, 20)
+	end
+end
+return v16
