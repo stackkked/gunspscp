@@ -1,0 +1,4211 @@
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local HttpService = game:GetService("HttpService")
+local TweenService = game:GetService("TweenService")
+local CoreGui = game:GetService("CoreGui")
+local LocalPlayer = Players.LocalPlayer
+local Mouse = LocalPlayer:GetMouse()
+local Camera = workspace.CurrentCamera
+
+_G._ScriptUnloaded = false
+
+local function closeExistingSplixMenu()
+    if _G.SplixWindow and _G.SplixWindow.screen then
+        pcall(function() _G.SplixWindow.screen:Destroy() end)
+        _G.SplixWindow = nil
+    end
+end
+_G.CloseSplixMenu = closeExistingSplixMenu
+closeExistingSplixMenu()
+
+-- ==========================================
+-- 1. ГЛОБАЛЬНЫЙ КОНФИГ И ЗАГЛУШКИ
+-- ==========================================
+_G.Config = {
+    AutoReload = false,
+    ItemESPEnabled = false,
+    ItemESPMaxDistance = 400,
+    ItemESPIconSize = 32,
+    ItemESPExcludedCategories = {},
+    ItemESPExcludedItems = {},
+    RecoilScale = 100,
+    NoSpread = false,
+    SilentAim = false,
+    SilentAimTeamCheck = true,
+    SilentAimWallCheck = true,
+    TargetParts = {"Head", "Torso"},
+    FOVSize = 100,
+    ShowFOV = false,
+    AmmoCounterEnabled = false,
+    AutoShootEnabled = false,
+    -- Player ESP (from teleport.lua)
+    ESPEnabled = false,
+    ESPShowChams = true,
+    ESPShowBox = true,
+    ESPShowName = true,
+    ESPShowHealth = true,
+    ESPShowHealthBar = true,
+    ESPShowDistance = true,
+    ESPShowRole = true,
+    ESPShowTeamColor = true,
+    ESPShowTeammates = true,
+    ESPMaxDistance = 500,
+    ESPBoxThickness = 1.5,
+    ESPNameSize = 12,
+    ESPBoxColor = Color3.fromRGB(255, 255, 255),
+    ESPChamFillTransparency = 0.72,
+    ESPChamOutlineTransparency = 0.12,
+    -- Moderator ESP settings (from teleport.lua)
+    ModESPEnabled = false,
+    ModFillColor = Color3.fromRGB(220, 88, 88),
+    ModOutlineColor = Color3.fromRGB(255, 210, 200),
+    -- Viewmodel offset (workspace.viewmodel_offset)
+    ViewmodelEnabled = false,
+    ViewmodelLock = true,
+    ViewmodelOffsetX = 0,
+    ViewmodelOffsetY = 0,
+    ViewmodelOffsetZ = 0,
+    -- Ban panic (auto exit on kick/ban messages)
+    BanPanicEnabled = true,
+    ConfigFileName = "default",
+    -- Misc
+    InfiniteStaminaEnabled = false,
+    FullbrightEnabled = false,
+    MenuColor = Color3.fromRGB(225, 58, 81),
+    -- Viewmodel chams
+    ArmChamsEnabled = false,
+    ArmChamsColor = Color3.fromRGB(255, 255, 255),
+    ArmChamsStyle = "ForceField",
+    WeaponChamsEnabled = false,
+    WeaponChamsColor = Color3.fromRGB(0, 255, 255),
+    WeaponChamsStyle = "ForceField",
+    -- Bullet tracers
+    TracersEnabled = false,
+    TracerColor = Color3.fromRGB(255, 255, 0),
+    TracerStyle = "Neon",
+    TracerDuration = 0.8,
+    TracerWidth = 0.05,
+    TracerMaxDistance = 500,
+}
+
+_G.GunsModule = nil
+_G.SharedSettings = nil
+_G.TeamsManager = nil
+_G.BulletHandler = nil
+
+-- Заглушка ClientMain (Анти-детект)
+if not LocalPlayer:WaitForChild("PlayerScripts"):FindFirstChild("ClientMain") then
+    local d = Instance.new("Folder", LocalPlayer.PlayerScripts)
+    d.Name = "ClientMain"
+end
+
+-- ==========================================
+-- 2. БАЙПАССЕР СТРОГО ИЗ ТВОЕГО "123.txt"
+-- ==========================================
+local in_hook = false
+local oldNamecall; oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
+    if in_hook then return oldNamecall(self, ...) end 
+    
+    local method = getnamecallmethod()
+    local name = tostring(self)
+
+    if method == "FireServer" or method == "fireServer" then
+        -- 1. БЛОКИРОВКА АНТИЧИТА
+        if name == "SendMessage" or name == "LogAnSentryError" or name == "HookFunctionOutput" then
+            local args = {...}
+            local msg = tostring(args[1] or "")
+            if msg:find("_PESP") or msg:find("memory") or msg:find("ClientMain") or msg:find("verification") then
+                return nil
+            end
+        end
+
+        -- 2. АНТИ-SPEEDHACK БАН
+        if name == "HumanoidUpdater" then
+            local args = table.pack(...)
+            if args[1] == "step" then
+                args[3] = 16 
+                args[4] = 25 
+                return oldNamecall(self, table.unpack(args, 1, args.n))
+            end
+        end
+    end
+    
+    return oldNamecall(self, ...)
+end)
+
+-- Маскировка debug.info
+local oldDebug; oldDebug = hookfunction(debug.info, function(l, s, ...)
+    local res = oldDebug(l, s, ...)
+    if res == "ClientMain" or res == "Initialize" then return "ReplicatedFirst.CustomCodeFunctions" end
+    return res
+end)
+
+-- Маскировка gcinfo
+local memOffset = 0
+hookfunction(gcinfo, function(...)
+    memOffset = (memOffset + math.random(1, 2)) % 30
+    return 1500 + memOffset
+end)
+
+-- Snapshot Immunity
+task.spawn(function()
+    local DoSnap = ReplicatedStorage:WaitForChild("DoSnap", 5)
+    local Check = ReplicatedStorage:WaitForChild("Check", 5)
+    if DoSnap then DoSnap.OnClientInvoke = function() return "{}" end end
+    if Check then Check.OnClientInvoke = function() return 0 end end
+end)
+
+-- ==========================================
+-- 3. ПОИСК ЦЕЛИ (ИСПРАВЛЕННЫЙ СДВИГ FOV)
+-- ==========================================
+local function getPlayerCharacter(player)
+    local folder = workspace:FindFirstChild("PlayerCharacters")
+    if folder then
+        local char = folder:FindFirstChild(player.Name)
+        if char and char:IsA("Model") and char:FindFirstChild("HumanoidRootPart") then
+            return char
+        end
+    end
+    if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+        return player.Character
+    end
+    return nil
+end
+
+local AIM_PART_ALIASES = {
+    Head = {"Head"},
+    Torso = {"Torso", "UpperTorso", "LowerTorso"},
+    ["Left Arm"] = {"Left Arm", "LeftUpperArm", "LeftLowerArm", "LeftHand"},
+    ["Right Arm"] = {"Right Arm", "RightUpperArm", "RightLowerArm", "RightHand"},
+    ["Left Leg"] = {"Left Leg", "LeftUpperLeg", "LeftLowerLeg", "LeftFoot"},
+    ["Right Leg"] = {"Right Leg", "RightUpperLeg", "RightLowerLeg", "RightFoot"},
+}
+
+local function resolveAimPart(char, partName)
+    if not char or not partName then return nil end
+    local names = AIM_PART_ALIASES[partName] or {partName}
+    for _, name in ipairs(names) do
+        local part = char:FindFirstChild(name)
+        if part and part:IsA("BasePart") then
+            return part
+        end
+    end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if hrp and hrp:IsA("BasePart") then
+        return hrp
+    end
+    return nil
+end
+
+local function estimateHeadPosition(char, fallbackPart)
+    if not char or not fallbackPart then
+        return fallbackPart and fallbackPart.Position
+    end
+
+    local head = char:FindFirstChild("Head")
+    if head and head:IsA("BasePart") then
+        return head.Position
+    end
+
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    local upperTorso = char:FindFirstChild("UpperTorso") or char:FindFirstChild("Torso")
+    if upperTorso and upperTorso:IsA("BasePart") then
+        return upperTorso.Position + Vector3.new(0, upperTorso.Size.Y * 0.55, 0)
+    end
+
+    if hum then
+        local hipHeight = hum.HipHeight or 2
+        return fallbackPart.Position + Vector3.new(0, hipHeight + 1.1, 0)
+    end
+
+    local ok, cf, size = pcall(function()
+        return char:GetBoundingBox()
+    end)
+    if ok and cf and size then
+        return cf.Position + Vector3.new(0, size.Y * 0.32, 0)
+    end
+
+    return fallbackPart.Position
+end
+
+_G.GetTargetAimPosition = function(targetPart, aimPartName)
+    if not targetPart or not targetPart:IsA("BasePart") then
+        return targetPart and targetPart.Position
+    end
+
+    local char = targetPart.Parent
+    aimPartName = aimPartName or targetPart.Name
+
+    if aimPartName == "Head" or targetPart.Name == "Head" then
+        if targetPart.Name == "Head" then
+            return targetPart.Position
+        end
+        if char and char:IsA("Model") then
+            return estimateHeadPosition(char, targetPart)
+        end
+    end
+
+    return targetPart.Position
+end
+
+local function getSilentAimOrigin()
+    local char = getPlayerCharacter(LocalPlayer) or LocalPlayer.Character
+    if char then
+        local head = char:FindFirstChild("Head")
+        if head and head:IsA("BasePart") then
+            return head.Position
+        end
+        local root = char:FindFirstChild("HumanoidRootPart")
+        if root and root:IsA("BasePart") then
+            return root.Position
+        end
+    end
+    if Camera then
+        return Camera.CFrame.Position
+    end
+    return nil
+end
+
+local function hasSilentAimLineOfSight(origin, targetChar, targetPos)
+    if _G.Config.SilentAimWallCheck == false then
+        return true
+    end
+    if typeof(origin) ~= "Vector3" or typeof(targetPos) ~= "Vector3" then
+        return false
+    end
+
+    local delta = targetPos - origin
+    local distance = delta.Magnitude
+    if distance < 0.05 then
+        return true
+    end
+
+    local rayParams = RaycastParams.new()
+    rayParams.FilterType = Enum.RaycastFilterType.Exclude
+    local ignore = {}
+    local localChar = getPlayerCharacter(LocalPlayer) or LocalPlayer.Character
+    if localChar then
+        table.insert(ignore, localChar)
+    end
+    if Camera then
+        table.insert(ignore, Camera)
+    end
+    rayParams.FilterDescendantsInstances = ignore
+
+    local ray = workspace:Raycast(origin, delta.Unit * distance, rayParams)
+    if not ray then
+        return true
+    end
+    return targetChar and ray.Instance:IsDescendantOf(targetChar)
+end
+
+local function isSilentAimValidTarget(plr)
+    if not plr or plr == LocalPlayer then
+        return false
+    end
+
+    local char = getPlayerCharacter(plr)
+    if not char then
+        return false
+    end
+
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 then
+        return false
+    end
+
+    if _G.TeamsManager then
+        local teamName = _G.TeamsManager.GetAssignedTeam(plr)
+        if teamName == "LOBBY" or teamName == "Admin" then
+            return false
+        end
+        if _G.TeamsManager.IsDead(plr) then
+            return false
+        end
+    end
+
+    if _G.Config.SilentAimTeamCheck ~= false then
+        if _G.TeamsManager then
+            local alliance = _G.TeamsManager.GetAlliance(LocalPlayer, plr)
+            if alliance ~= "Hostile" and alliance ~= "Neutral" then
+                return false
+            end
+        elseif plr.Team and LocalPlayer.Team and plr.Team == LocalPlayer.Team then
+            return false
+        end
+    end
+
+    return true
+end
+
+local function predictAimPosition(aimPos, origin, velocity, bulletSpeed)
+    if typeof(aimPos) ~= "Vector3" or typeof(origin) ~= "Vector3" then
+        return aimPos
+    end
+
+    bulletSpeed = math.max(tonumber(bulletSpeed) or 1000, 1)
+    local distance = (aimPos - origin).Magnitude
+    local timeToTarget = distance / bulletSpeed
+
+    velocity = velocity or Vector3.new(0, 0, 0)
+    local predictedVelocity = Vector3.new(
+        velocity.X,
+        velocity.Y * 0.35,
+        velocity.Z
+    )
+
+    return aimPos + predictedVelocity * timeToTarget
+end
+
+local function getSilentAimDirection(pos, gun, target, aimPartName)
+    local bulletSpeed = gun and (gun:GetAttribute("Velocity") or gun:GetAttribute("BULLET_SPEED"))
+        or (workspace:FindFirstChild("Gun_variables") and workspace.Gun_variables:FindFirstChild("BULLET_SPEED") and workspace.Gun_variables.BULLET_SPEED.Value)
+        or 1000
+
+    local rootPart = target.Parent and target.Parent:FindFirstChild("HumanoidRootPart")
+    local velocity = rootPart and rootPart.AssemblyLinearVelocity or Vector3.new(0, 0, 0)
+    local aimPos = _G.GetTargetAimPosition(target, aimPartName) or target.Position
+    local predictedPos = predictAimPosition(aimPos, pos, velocity, bulletSpeed)
+    local targetChar = target.Parent
+
+    if not hasSilentAimLineOfSight(pos, targetChar, predictedPos) then
+        return nil
+    end
+
+    local delta = predictedPos - pos
+    if delta.Magnitude < 0.001 then
+        return nil
+    end
+    return delta.Unit
+end
+
+_G.GetBestTarget = function()
+    local bestPart = nil
+    local bestPartName = nil
+    local shortestDist = _G.Config.FOVSize
+    local aimOrigin = getSilentAimOrigin()
+
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if not isSilentAimValidTarget(plr) then continue end
+
+        local char = getPlayerCharacter(plr)
+        if not char then continue end
+
+        -- если у цели есть крылья (RightWing + LeftWing) — скипаем TargetParts, стреляем по UpperTorso
+        local targetList = type(_G.Config.TargetParts) == "table" and _G.Config.TargetParts or {"Head", "Torso"}
+        if char:FindFirstChild("RightWing") and char:FindFirstChild("LeftWing") then
+            targetList = {"UpperTorso"}
+        end
+        for _, partName in pairs(targetList) do
+            if type(partName) ~= "string" then continue end
+
+            local part = resolveAimPart(char, partName)
+            if part then
+                local aimPos = _G.GetTargetAimPosition(part, partName)
+                if aimOrigin and not hasSilentAimLineOfSight(aimOrigin, char, aimPos) then
+                    continue
+                end
+
+                local pos, onScreen = Camera:WorldToViewportPoint(aimPos)
+                if onScreen then
+                    local mousePos = UserInputService:GetMouseLocation()
+                    local dist = (Vector2.new(pos.X, pos.Y) - mousePos).Magnitude
+                    if dist < shortestDist then
+                        bestPart = part
+                        bestPartName = partName
+                        shortestDist = dist
+                    end
+                end
+            end
+        end
+    end
+    return bestPart, bestPartName
+end
+
+-- ==========================================
+-- 3.5 MODERATOR DETECT + PLAYER ESP (teleport.lua)
+-- ==========================================
+local MOD_GROUP_ID = 7357226
+local MOD_ROLES = {
+    ["Moderator"] = true, ["Admin"] = true, ["Super Admin"] = true,
+    ["Jr.Developer"] = true, ["Developer"] = true,
+    ["Monkey"] = true, ["Head Developer"] = true, ["Owner"] = true
+}
+local ModeratorCacheByUserId = {}
+local ESP_MOD_COLOR = Color3.fromRGB(255, 178, 158)
+local ESP_MOD_CHAM_FILL = Color3.fromRGB(255, 120, 110)
+local ESP_MOD_CHAM_OUTLINE = Color3.fromRGB(255, 195, 185)
+
+local moderatorHighlightConns = {}
+
+local function getDrawParent()
+    if typeof(gethui) == "function" then
+        return gethui()
+    end
+    return CoreGui
+end
+
+local function getRole(plr)
+    local ok, role = pcall(function()
+        return plr:GetRoleInGroup(MOD_GROUP_ID)
+    end)
+    return (ok and role) or "Unknown"
+end
+
+local function isModerator(plr)
+    if not plr or plr == LocalPlayer then return false end
+    local ok, inGroup = pcall(function() return plr:IsInGroup(MOD_GROUP_ID) end)
+    if not ok or not inGroup then return false end
+    return MOD_ROLES[getRole(plr)] == true
+end
+
+local function refreshModeratorCache()
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if isModerator(plr) then
+            ModeratorCacheByUserId[plr.UserId] = getRole(plr)
+        else
+            ModeratorCacheByUserId[plr.UserId] = nil
+        end
+    end
+end
+
+local function highlightModerator(plr)
+    if not plr or not plr.Character then return end
+    local char = plr.Character
+    local hl = char:FindFirstChild("ModHighlight")
+    if not hl then
+        hl = Instance.new("Highlight")
+        hl.Name = "ModHighlight"
+        hl.Parent = char
+    end
+    hl.FillColor = _G.Config.ModFillColor or Color3.fromRGB(220, 88, 88)
+    hl.OutlineColor = _G.Config.ModOutlineColor or Color3.fromRGB(255, 210, 200)
+    hl.FillTransparency = 0.55
+    hl.OutlineTransparency = 0.2
+    hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    hl.Enabled = true
+end
+
+local function removeModeratorHighlight(plr)
+    if not plr or not plr.Character then return end
+    local hl = plr.Character:FindFirstChild("ModHighlight")
+    if hl then hl:Destroy() end
+end
+
+local function bindModeratorHighlight(plr)
+    if moderatorHighlightConns[plr] then return end
+    moderatorHighlightConns[plr] = plr.CharacterAdded:Connect(function()
+        task.wait(0.35)
+        if _G.Config.ModESPEnabled and isModerator(plr) then
+            highlightModerator(plr)
+        end
+    end)
+end
+
+local function unbindModeratorHighlight(plr)
+    local conn = moderatorHighlightConns[plr]
+    if conn then
+        conn:Disconnect()
+        moderatorHighlightConns[plr] = nil
+    end
+    removeModeratorHighlight(plr)
+end
+
+function updateAllModeratorHighlights()
+    refreshModeratorCache()
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr == LocalPlayer then continue end
+        if _G.Config.ModESPEnabled and isModerator(plr) then
+            highlightModerator(plr)
+            bindModeratorHighlight(plr)
+        else
+            unbindModeratorHighlight(plr)
+        end
+    end
+end
+
+task.spawn(function()
+    local repMods = ReplicatedStorage:WaitForChild("Modules", 30)
+    if repMods and repMods:FindFirstChild("TeamsManager") and not _G.TeamsManager then
+        pcall(function()
+            _G.TeamsManager = require(repMods.TeamsManager)
+        end)
+    end
+end)
+
+Players.PlayerAdded:Connect(function(plr)
+    task.defer(refreshModeratorCache)
+    if _G.Config.ModESPEnabled and isModerator(plr) then
+        if plr.Character then highlightModerator(plr) end
+        bindModeratorHighlight(plr)
+    end
+end)
+Players.PlayerRemoving:Connect(function(plr)
+    ModeratorCacheByUserId[plr.UserId] = nil
+    unbindModeratorHighlight(plr)
+end)
+task.spawn(function()
+    task.wait(1)
+    updateAllModeratorHighlights()
+end)
+
+local ESPObjects = {}
+local ESPPlayerConns = {}
+local ESPUpdateConn = nil
+local isMobileESP = UserInputService.TouchEnabled and not UserInputService.MouseEnabled
+local espUpdateFrequencyMobile = isMobileESP and 6 or 2
+local espUpdateCounter = 0
+
+local TEAM_COLORS = {
+    ["foundation"] = Color3.fromRGB(60, 120, 230),
+    ["mtf"] = Color3.fromRGB(80, 160, 230),
+    ["guard"] = Color3.fromRGB(80, 130, 200),
+    ["scientist"] = Color3.fromRGB(230, 200, 40),
+    ["d-class"] = Color3.fromRGB(230, 130, 30),
+    ["d class"] = Color3.fromRGB(230, 130, 30),
+    ["chaos"] = Color3.fromRGB(50, 200, 70),
+    ["scp"] = Color3.fromRGB(210, 40, 40),
+    ["staff"] = Color3.fromRGB(200, 80, 200),
+    ["admin"] = Color3.fromRGB(200, 80, 200),
+    ["spectator"] = Color3.fromRGB(150, 150, 150),
+    ["ghost"] = Color3.fromRGB(180, 180, 220),
+    ["lobby"] = Color3.fromRGB(150, 150, 150),
+}
+
+local function resolveColorFromTeamName(teamName)
+    if not teamName or teamName == "UNKNOWN" then return nil end
+    local lower = teamName:lower()
+    for key, col in pairs(TEAM_COLORS) do
+        if lower:find(key, 1, true) then
+            return col
+        end
+    end
+    return nil
+end
+
+local function getTeamData(player)
+    local char = getPlayerCharacter(player)
+    local teamName, teamColor, teamLabel = nil, nil, nil
+
+    if _G.TeamsManager then
+        local subject = char or player
+        teamName = _G.TeamsManager.GetAssignedTeam(subject)
+        local resolvedName, teamInfo = _G.TeamsManager.GetTeamInfo(subject)
+        if teamInfo then
+            teamName = resolvedName or teamName
+            teamColor = teamInfo.Color
+            teamLabel = teamInfo.DisplayName or teamName
+        end
+    end
+
+    if (not teamName or teamName == "UNKNOWN") and player then
+        teamName = player:GetAttribute("teamname")
+    end
+    if (not teamName or teamName == "UNKNOWN") and char then
+        teamName = char:GetAttribute("teamname")
+    end
+
+    if not teamColor and player then
+        teamColor = player:GetAttribute("teamcolor")
+    end
+    if not teamColor and char then
+        teamColor = char:GetAttribute("teamcolor")
+    end
+    if not teamColor then
+        teamColor = resolveColorFromTeamName(teamName)
+    end
+
+    teamLabel = teamLabel or teamName or "Unknown"
+    if teamLabel == "UNKNOWN" then
+        teamLabel = "Unknown"
+    end
+
+    return teamName, teamColor, teamLabel
+end
+
+local function getTeamColor(player)
+    if not _G.Config.ESPShowTeamColor then
+        return _G.Config.ESPBoxColor
+    end
+    local _, teamColor = getTeamData(player)
+    return teamColor or _G.Config.ESPBoxColor
+end
+
+local function getTeamLabel(player)
+    local _, _, teamLabel = getTeamData(player)
+    return teamLabel
+end
+
+local function newLine()
+    local l = Drawing.new("Line")
+    l.Visible = false
+    l.Color = Color3.new(1, 1, 1)
+    l.Thickness = 1.5
+    l.Transparency = 1
+    return l
+end
+
+local function makeBox()
+    local b = Drawing.new("Square")
+    b.Visible = false
+    b.Filled = false
+    b.Thickness = _G.Config.ESPBoxThickness
+    b.Color = _G.Config.ESPBoxColor
+    b.Transparency = 1
+    return b
+end
+
+local function newText(centered)
+    local t = Drawing.new("Text")
+    t.Visible = false
+    t.Color = Color3.new(1, 1, 1)
+    t.Size = 13
+    t.Font = Drawing.Fonts.UI
+    t.Outline = true
+    t.OutlineColor = Color3.new(0, 0, 0)
+    t.Center = centered ~= false
+    t.Transparency = 1
+    return t
+end
+
+local function estimateTextWidth(text, size)
+    return #tostring(text) * (size * 0.42)
+end
+
+local function removeESP(player)
+    local d = ESPObjects[player]
+    if not d then return end
+    pcall(function()
+        d.Box:Remove()
+        d.hpBarBg:Remove()
+        d.hpBarFill:Remove()
+        d.nameText:Remove()
+        d.tagText:Remove()
+        d.hpText:Remove()
+        d.distText:Remove()
+        if d.Chams then d.Chams:Destroy() end
+    end)
+    ESPObjects[player] = nil
+end
+
+local function buildESP(player)
+    if player == LocalPlayer then return end
+    removeESP(player)
+    ESPObjects[player] = {
+        Box = makeBox(),
+        hpBarBg = newLine(),
+        hpBarFill = newLine(),
+        nameText = newText(),
+        tagText = newText(),
+        hpText = newText(false),
+        distText = newText(),
+        Chams = nil,
+    }
+end
+
+local function updateESPChams(d, char, color, enabled, outlineOverride)
+    if not d then return end
+    if not enabled or not _G.Config.ESPShowChams or not char then
+        if d.Chams then d.Chams.Enabled = false end
+        return
+    end
+    if not d.Chams or not d.Chams.Parent then
+        local hl = Instance.new("Highlight")
+        hl.Name = "TeleportESPCham"
+        hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+        hl.Parent = getDrawParent()
+        d.Chams = hl
+    end
+    local fillColor = color:Lerp(Color3.new(1, 1, 1), 0.12)
+    local outlineColor = outlineOverride or color:Lerp(Color3.new(0, 0, 0), 0.45)
+    d.Chams.Adornee = char
+    d.Chams.FillColor = fillColor
+    d.Chams.FillTransparency = _G.Config.ESPChamFillTransparency
+    d.Chams.OutlineColor = outlineColor
+    d.Chams.OutlineTransparency = _G.Config.ESPChamOutlineTransparency
+    d.Chams.Enabled = true
+end
+
+local function getScreenBounds(char, camera)
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return nil end
+    local top = hrp.Position + Vector3.new(0, 2.8, 0)
+    local bottom = hrp.Position - Vector3.new(0, 3.2, 0)
+    local topScreen, onTop = camera:WorldToViewportPoint(top)
+    local bottomScreen, onBottom = camera:WorldToViewportPoint(bottom)
+    if not onTop and not onBottom then return nil, false end
+    local screenH = math.abs(topScreen.Y - bottomScreen.Y)
+    local screenW = screenH * 0.45
+    local cx = topScreen.X
+    return {
+        left = cx - screenW * 0.5,
+        right = cx + screenW * 0.5,
+        top = topScreen.Y,
+        bottom = bottomScreen.Y,
+        cx = cx,
+        w = screenW,
+        h = screenH,
+    }, true
+end
+
+local function espUpdate()
+    if not _G.Config.ESPEnabled then return end
+    espUpdateCounter = espUpdateCounter + 1
+    if espUpdateCounter < espUpdateFrequencyMobile then return end
+    espUpdateCounter = 0
+
+    local camera = workspace.CurrentCamera
+    local myRoot = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player == LocalPlayer then continue end
+        local d = ESPObjects[player]
+        if not d then continue end
+
+        local char = getPlayerCharacter(player)
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        local dist = (myRoot and hrp) and math.floor((hrp.Position - myRoot.Position).Magnitude) or nil
+        local inRange = dist and dist <= _G.Config.ESPMaxDistance
+        local alive = hum and hum.Health > 0
+
+        -- Teammates filter: если ESPShowTeammates выключен и игрок союзник — не рисуем ESP
+        local isTeammate = false
+        if not _G.Config.ESPShowTeammates then
+            if _G.TeamsManager and _G.TeamsManager.GetAlliance then
+                local alliance = _G.TeamsManager.GetAlliance(LocalPlayer, player)
+                if alliance == "Friendly" then
+                    isTeammate = true
+                end
+            elseif player.Team and LocalPlayer.Team and player.Team == LocalPlayer.Team then
+                isTeammate = true
+            end
+        end
+
+        if isTeammate then
+            updateESPChams(d, char, getTeamColor(player), false)
+            d.Box.Visible = false
+            d.hpBarBg.Visible = false
+            d.hpBarFill.Visible = false
+            d.nameText.Visible = false
+            d.tagText.Visible = false
+            d.hpText.Visible = false
+            d.distText.Visible = false
+            continue
+        end
+
+        if not char or not hrp or not inRange or not alive or not hum then
+            updateESPChams(d, char, getTeamColor(player), false)
+            d.Box.Visible = false
+            d.hpBarBg.Visible = false
+            d.hpBarFill.Visible = false
+            d.nameText.Visible = false
+            d.tagText.Visible = false
+            d.hpText.Visible = false
+            d.distText.Visible = false
+            continue
+        end
+
+        local bounds, onScreen = getScreenBounds(char, camera)
+        if not onScreen or not bounds then
+            updateESPChams(d, char, getTeamColor(player), false)
+            d.Box.Visible = false
+            d.hpBarBg.Visible = false
+            d.hpBarFill.Visible = false
+            d.nameText.Visible = false
+            d.tagText.Visible = false
+            d.hpText.Visible = false
+            d.distText.Visible = false
+            continue
+        end
+
+        local isMod = ModeratorCacheByUserId[player.UserId] ~= nil
+        local col = isMod and ESP_MOD_COLOR or getTeamColor(player)
+        if isMod then
+            updateESPChams(d, char, ESP_MOD_CHAM_FILL, true, ESP_MOD_CHAM_OUTLINE)
+        else
+            updateESPChams(d, char, col, true)
+        end
+
+        local thick = isMobileESP and math.max(0.5, _G.Config.ESPBoxThickness * 0.5) or _G.Config.ESPBoxThickness
+        d.Box.Visible = _G.Config.ESPShowBox
+        d.Box.Color = col
+        d.Box.Thickness = thick
+        d.Box.Size = Vector2.new(bounds.w, bounds.h)
+        d.Box.Position = Vector2.new(bounds.left, bounds.top)
+        d.Box.Transparency = 1
+
+        local barX = bounds.right + 3
+        local barTopY = bounds.top
+        local barBotY = bounds.bottom
+        local barH = barBotY - barTopY
+        local maxHp = hum.MaxHealth
+        if not maxHp or maxHp <= 0 then maxHp = 100 end
+        local hp = math.clamp(hum.Health, 0, maxHp)
+        local frac = hp / maxHp
+
+        if frac <= 0 then
+            updateESPChams(d, char, col, false)
+            d.hpBarBg.Visible = false
+            d.hpBarFill.Visible = false
+            d.hpText.Visible = false
+            d.Box.Visible = false
+            d.nameText.Visible = false
+            d.tagText.Visible = false
+            d.distText.Visible = false
+            continue
+        end
+
+        local fillY = barBotY - barH * frac
+        local hpR = math.clamp(2 * (1 - frac), 0, 1)
+        local hpG = math.clamp(2 * frac, 0, 1)
+        local hpCol = Color3.new(hpR, hpG, 0.1)
+
+        d.hpBarBg.From = Vector2.new(barX, barTopY)
+        d.hpBarBg.To = Vector2.new(barX, barBotY)
+        d.hpBarBg.Color = Color3.fromRGB(20, 20, 20)
+        d.hpBarBg.Thickness = 3
+        d.hpBarBg.Transparency = 1
+        d.hpBarBg.Visible = _G.Config.ESPShowHealthBar and not isMobileESP
+
+        d.hpBarFill.From = Vector2.new(barX, fillY)
+        d.hpBarFill.To = Vector2.new(barX, barBotY)
+        d.hpBarFill.Color = hpCol
+        d.hpBarFill.Thickness = 3
+        d.hpBarFill.Transparency = 1
+        d.hpBarFill.Visible = _G.Config.ESPShowHealthBar and not isMobileESP
+
+        local ns = _G.Config.ESPNameSize
+        local nameY = bounds.top - ns - 3
+        if isMod then
+            d.nameText.Text = "[MOD]" .. player.Name
+            d.nameText.Color = ESP_MOD_COLOR
+        else
+            local dispName = player.DisplayName
+            if dispName == "" or dispName == player.Name then
+                dispName = player.Name
+            end
+            d.nameText.Text = dispName
+            d.nameText.Color = col
+        end
+        d.nameText.Size = ns
+        d.nameText.Position = Vector2.new(bounds.cx, nameY)
+        d.nameText.Transparency = 1
+        d.nameText.Visible = _G.Config.ESPShowName and not isMobileESP
+
+        local bottomY = bounds.bottom + 2
+        local hpLineH = math.max(8, ns - 1)
+        local distLineH = math.max(7, ns - 2)
+        local roleLineH = math.max(7, ns - 2)
+
+        local hpPercent = math.clamp(math.floor(frac * 100 + 0.5), 0, 100)
+        d.hpText.Text = hpPercent .. "%"
+        d.hpText.Size = hpLineH
+        d.hpText.Color = Color3.new(hpR * 0.6 + 0.5, hpG * 0.6 + 0.5, 0.4)
+        d.hpText.Center = false
+        d.hpText.Transparency = 1
+        d.hpText.Visible = _G.Config.ESPShowHealth
+        if d.hpText.Visible then
+            d.hpText.Center = true
+            d.hpText.Position = Vector2.new(barX + 10, (barTopY + barBotY) * 0.5)
+        end
+
+        d.distText.Text = dist .. " m"
+        d.distText.Size = distLineH
+        d.distText.Color = Color3.fromRGB(180, 180, 180)
+        d.distText.Transparency = 1
+        d.distText.Visible = _G.Config.ESPShowDistance and not isMobileESP
+        if d.distText.Visible then
+            d.distText.Position = Vector2.new(bounds.cx, bottomY)
+            bottomY = bottomY + distLineH + 1
+        end
+
+        d.tagText.Text = getTeamLabel(player)
+        d.tagText.Size = roleLineH
+        d.tagText.Color = col
+        d.tagText.Transparency = 1
+        d.tagText.Visible = _G.Config.ESPShowRole and not isMobileESP
+        if d.tagText.Visible then
+            d.tagText.Position = Vector2.new(bounds.cx, bottomY)
+        end
+    end
+end
+
+local function hideESPObjects(d)
+    if not d then return end
+    d.Box.Visible = false
+    d.hpBarBg.Visible = false
+    d.hpBarFill.Visible = false
+    d.nameText.Visible = false
+    d.tagText.Visible = false
+    d.hpText.Visible = false
+    d.distText.Visible = false
+end
+
+local function bindESPCharacter(plr)
+    if ESPPlayerConns[plr] then return end
+    ESPPlayerConns[plr] = plr.CharacterAdded:Connect(function(newChar)
+        task.wait(0.8)
+        if _G.Config.ESPEnabled then
+            pcall(function() buildESP(plr) end)
+            local hum = newChar:WaitForChild("Humanoid", 5)
+            if hum then
+                hum.Died:Connect(function()
+                    hideESPObjects(ESPObjects[plr])
+                end)
+            end
+        end
+    end)
+end
+
+local function enableESP()
+    refreshModeratorCache()
+    for _, p in ipairs(Players:GetPlayers()) do
+        pcall(function() buildESP(p) end)
+        if p ~= LocalPlayer then bindESPCharacter(p) end
+    end
+    if not ESPPlayerConns._Added then
+        ESPPlayerConns._Added = Players.PlayerAdded:Connect(function(p)
+            bindESPCharacter(p)
+            p.CharacterAdded:Connect(function(newChar)
+                task.wait(0.8)
+                if _G.Config.ESPEnabled then
+                    pcall(function() buildESP(p) end)
+                    local hum = newChar:WaitForChild("Humanoid", 5)
+                    if hum then
+                        hum.Died:Connect(function()
+                            hideESPObjects(ESPObjects[p])
+                        end)
+                    end
+                end
+            end)
+        end)
+        ESPPlayerConns._Removing = Players.PlayerRemoving:Connect(function(p)
+            pcall(function() removeESP(p) end)
+            if ESPPlayerConns[p] then
+                pcall(function() ESPPlayerConns[p]:Disconnect() end)
+                ESPPlayerConns[p] = nil
+            end
+        end)
+    end
+    if not ESPUpdateConn then
+        ESPUpdateConn = RunService.Heartbeat:Connect(function()
+            pcall(espUpdate)
+        end)
+    end
+end
+
+local function disableESP()
+    for _, p in ipairs(Players:GetPlayers()) do
+        pcall(function() removeESP(p) end)
+    end
+    for k, c in pairs(ESPPlayerConns) do
+        pcall(function() c:Disconnect() end)
+        ESPPlayerConns[k] = nil
+    end
+    if ESPUpdateConn then
+        ESPUpdateConn:Disconnect()
+        ESPUpdateConn = nil
+    end
+end
+
+local function refreshAllESP()
+    if not _G.Config.ESPEnabled then return end
+    for _, p in ipairs(Players:GetPlayers()) do
+        pcall(function() buildESP(p) end)
+    end
+end
+
+local function cleanupOrphanESPInstances()
+    pcall(function()
+        local parent = getDrawParent()
+        for _, desc in ipairs(parent:GetDescendants()) do
+            if desc.Name == "TeleportESPCham" or desc.Name == "ItemEspIcon" then
+                desc:Destroy()
+            end
+        end
+    end)
+    for _, plr in ipairs(Players:GetPlayers()) do
+        pcall(function()
+            if plr.Character then
+                local hl = plr.Character:FindFirstChild("ModHighlight")
+                if hl then hl:Destroy() end
+            end
+        end)
+    end
+    local charFolder = workspace:FindFirstChild("PlayerCharacters")
+    if charFolder then
+        for _, char in ipairs(charFolder:GetChildren()) do
+            local hl = char:FindFirstChild("MidnightChams")
+            if hl then hl:Destroy() end
+        end
+    end
+end
+
+_G.ReloadESP = function()
+    local playerEsp = _G.Config.ESPEnabled
+    local itemEsp = _G.Config.ItemESPEnabled
+    local modEsp = _G.Config.ModESPEnabled
+
+    disableESP()
+    if itemEsp then
+        disableItemESP()
+    end
+
+    cleanupOrphanESPInstances()
+    espUpdateCounter = 0
+    refreshModeratorCache()
+
+    if playerEsp then
+        enableESP()
+    end
+    if itemEsp then
+        enableItemESP()
+    end
+    if modEsp then
+        updateAllModeratorHighlights()
+    end
+end
+
+_G.SetPlayerESPEnabled = function(val)
+    _G.Config.ESPEnabled = val
+    if val then
+        if isMobileESP then
+            _G.Config.ESPMaxDistance = 200
+        end
+        enableESP()
+    else
+        disableESP()
+    end
+end
+
+-- ==========================================
+-- 3.6 ITEM ESP (предметы на карте)
+-- ==========================================
+local ItemCategories = {
+    ["AA-12"] = "Weapons", ["AK"] = "Weapons", ["Barrett M82A1"] = "Weapons", ["Base"] = "Weapons",
+    ["Bat"] = "Weapons", ["Baton"] = "Weapons", ["Beowulf"] = "Weapons", ["Carbon Sword"] = "Weapons",
+    ["China Lake"] = "Weapons", ["Colt SMG"] = "Weapons", ["Desert Eagle"] = "Weapons", ["G36C"] = "Weapons",
+    ["Glock 17"] = "Weapons", ["Gravity Gun"] = "Weapons", ["HK169 Grenade launcher"] = "Weapons",
+    ["HK51K"] = "Weapons", ["M110"] = "Weapons", ["M249"] = "Weapons", ["M4A1"] = "Weapons",
+    ["M4A1Old"] = "Weapons", ["M60"] = "Weapons", ["MP5"] = "Weapons", ["MP7"] = "Weapons",
+    ["Micro Uzi"] = "Weapons", ["Milkor MGL"] = "Weapons", ["Mini Saf"] = "Weapons", ["Nova"] = "Weapons",
+    ["P90"] = "Weapons", ["RPG"] = "Weapons", ["Railgun"] = "Weapons", ["Revolver"] = "Weapons",
+    ["Revolverold"] = "Weapons", ["S525 magnum drill"] = "Weapons", ["SCAR PDW"] = "Weapons",
+    ["SCAR-L"] = "Weapons", ["Saiga 12"] = "Weapons", ["Sawed-Off DB"] = "Weapons", ["Shield"] = "Weapons",
+    ["Silenced Banshee 300"] = "Weapons", ["Spas-15"] = "Weapons", ["Supernova"] = "Weapons",
+    ["UMP-45"] = "Weapons", ["USP"] = "Weapons", ["UZI"] = "Weapons", ["Wrench"] = "Weapons",
+    ["[Admin Panel] Minigun"] = "Weapons", ["[Admin Panel] Minigun old"] = "Weapons",
+    ["[Admin Panel] grenade jumper"] = "Weapons", ["death itself"] = "Weapons",
+
+    ["Class-D Keycard"] = "Keycards", ["Containment Engineer Keycard"] = "Keycards", ["Facility Guard Keycard"] = "Keycards",
+    ["Facility Manager Keycard"] = "Keycards", ["Janitor Keycard"] = "Keycards", ["MTF Cadet Keycard"] = "Keycards",
+    ["MTF Commander Keycard"] = "Keycards", ["MTF Lieutenant Keycard"] = "Keycards", ["Major Scientist Keycard"] = "Keycards",
+    ["O5 Keycard"] = "Keycards", ["Scientist Keycard"] = "Keycards", ["Zone Manager Keycard"] = "Keycards",
+    ["SCP-1507 Keycard"] = "Keycards",
+
+    ["Blue Soda"] = "Medical", ["Burger"] = "Medical", ["Chips"] = "Medical", ["Cup Of Coffee"] = "Medical",
+    ["Cup of Blood"] = "Medical", ["Cup of Boost"] = "Medical", ["Cup of Speed"] = "Medical",
+    ["Cup of Tea"] = "Medical", ["Cup of Vitamins"] = "Medical", ["Medkit"] = "Medical",
+    ["MedkitOldMODEL"] = "Medical", ["Red Soda"] = "Medical", ["Skin Spray"] = "Medical",
+
+    ["Insulated Heavy Vest"] = "Vests", ["Insulated Vest"] = "Vests", ["Light Weight Vest"] = "Vests",
+
+    ["SCP-005"] = "SCPs", ["SCP-034"] = "SCPs", ["SCP-207"] = "SCPs", ["SCP-330-1"] = "SCPs",
+    ["SCP-330-2"] = "SCPs", ["SCP-330-3"] = "SCPs", ["SCP-330-4"] = "SCPs", ["SCP-330-5"] = "SCPs",
+    ["SCP-330-6"] = "SCPs", ["SCP-512"] = "SCPs", ["SCP-714"] = "SCPs",
+
+    ["Chaos Radio"] = "Utility", ["GOC Radio"] = "Utility", ["GOC Scrambler V1"] = "Utility",
+    ["GOC Scrambler V2"] = "Utility", ["GOC Scrambler V3"] = "Utility", ["Flashlight"] = "Utility",
+    ["noFlashlight"] = "Utility", ["Handcuffs"] = "Utility", ["Hax Device Lvl1"] = "Utility",
+    ["Hax Device Lvl2"] = "Utility", ["Hax Device Lvl3"] = "Utility", ["Radio"] = "Utility",
+    ["Radio_ANCIENTMODEL"] = "Utility", ["Display_Board"] = "Utility", ["Cup"] = "Utility",
+    ["CandyBase"] = "Utility", ["CardBase"] = "Utility", ["Grenade"] = "Utility",
+    ["Smoke Grenade"] = "Utility", ["Stun Grenade"] = "Utility"
+}
+
+local CategoryColors = {
+    ["Weapons"] = Color3.fromRGB(255, 80, 80),
+    ["Keycards"] = Color3.fromRGB(80, 180, 255),
+    ["Medical"] = Color3.fromRGB(80, 255, 80),
+    ["Vests"] = Color3.fromRGB(255, 255, 100),
+    ["SCPs"] = Color3.fromRGB(220, 100, 255),
+    ["Utility"] = Color3.fromRGB(200, 200, 200)
+}
+
+local ItemCategoryList = {"Weapons", "Keycards", "Medical", "Vests", "SCPs", "Utility"}
+local ItemNameList = {}
+for name in pairs(ItemCategories) do
+    table.insert(ItemNameList, name)
+end
+table.sort(ItemNameList)
+
+local function isItemExcluded(instance)
+    if not instance then return true end
+    local cat = ItemCategories[instance.Name]
+    if not cat then return true end
+
+    local excludedCats = _G.Config.ItemESPExcludedCategories
+    if type(excludedCats) == "table" then
+        for _, c in ipairs(excludedCats) do
+            if c == cat then return true end
+        end
+    end
+
+    local excludedItems = _G.Config.ItemESPExcludedItems
+    if type(excludedItems) == "table" then
+        for _, itemName in ipairs(excludedItems) do
+            if itemName == instance.Name then return true end
+        end
+    end
+
+    return false
+end
+
+local ItemEspObjects = {}
+local ItemEspConns = {}
+local ItemTextureCache = {}
+
+local function toAssetImage(textureId)
+    if not textureId or textureId == "" then return nil end
+    local assetId = textureId:match("(%d+)")
+    if assetId then
+        return "rbxassetid://" .. assetId
+    end
+    return textureId
+end
+
+local function cacheToolTexture(tool)
+    if tool:IsA("Tool") and tool.TextureId ~= "" then
+        ItemTextureCache[tool.Name] = toAssetImage(tool.TextureId)
+    end
+end
+
+local function scanItemTextures()
+    for _, plr in ipairs(Players:GetPlayers()) do
+        local backpack = plr:FindFirstChild("Backpack")
+        if backpack then
+            for _, tool in ipairs(backpack:GetChildren()) do
+                cacheToolTexture(tool)
+            end
+        end
+        local char = plr.Character
+        if char then
+            for _, tool in ipairs(char:GetChildren()) do
+                cacheToolTexture(tool)
+            end
+        end
+    end
+    for _, desc in ipairs(ReplicatedStorage:GetDescendants()) do
+        if desc:IsA("Tool") then
+            cacheToolTexture(desc)
+        end
+    end
+end
+
+local function findItemTexture(instance)
+    if instance:IsA("Tool") and instance.TextureId ~= "" then
+        return toAssetImage(instance.TextureId)
+    end
+    if ItemTextureCache[instance.Name] then
+        return ItemTextureCache[instance.Name]
+    end
+    for _, desc in ipairs(instance:GetDescendants()) do
+        if desc:IsA("Decal") and desc.Texture ~= "" then
+            return toAssetImage(desc.Texture)
+        end
+        if desc:IsA("Texture") and desc.Texture ~= "" then
+            return toAssetImage(desc.Texture)
+        end
+        if desc:IsA("ImageLabel") and desc.Image ~= "" then
+            return desc.Image
+        end
+    end
+    return nil
+end
+
+local function getItemAdornee(instance)
+    if instance:IsA("Model") then
+        return instance.PrimaryPart or instance:FindFirstChild("Handle") or instance:FindFirstChildWhichIsA("BasePart")
+    elseif instance:IsA("Tool") then
+        return instance:FindFirstChild("Handle")
+    elseif instance:IsA("BasePart") then
+        return instance
+    end
+    return nil
+end
+
+local function isTrackedItem(instance)
+    return instance and instance.Parent and ItemCategories[instance.Name] ~= nil and not isItemExcluded(instance)
+end
+
+local function createItemEsp(instance)
+    if not isTrackedItem(instance) or ItemEspObjects[instance] then return end
+
+    local ok, err = pcall(function()
+        local adornee = getItemAdornee(instance)
+        if not adornee or not adornee.Parent then return end
+
+        local category = ItemCategories[instance.Name] or "Utility"
+        local iconSize = _G.Config.ItemESPIconSize or 32
+        local textureImage = findItemTexture(instance)
+
+        local billboard = Instance.new("BillboardGui")
+        billboard.Name = "ItemEspIcon"
+        billboard.Adornee = adornee
+        billboard.Size = UDim2.new(0, iconSize + 8, 0, iconSize + 18)
+        billboard.StudsOffset = Vector3.new(0, 2.2, 0)
+        billboard.AlwaysOnTop = true
+        billboard.LightInfluence = 0
+        billboard.MaxDistance = _G.Config.ItemESPMaxDistance or 400
+        billboard.Parent = getDrawParent()
+
+        if textureImage then
+            local image = Instance.new("ImageLabel")
+            image.Name = "IconImage"
+            image.Size = UDim2.new(1, 0, 0, iconSize)
+            image.BackgroundTransparency = 1
+            image.Image = textureImage
+            image.ScaleType = Enum.ScaleType.Fit
+            image.Parent = billboard
+        else
+            local frame = Instance.new("Frame")
+            frame.Name = "IconFallback"
+            frame.Size = UDim2.new(1, 0, 0, iconSize)
+            frame.BackgroundColor3 = CategoryColors[category] or Color3.fromRGB(200, 200, 200)
+            frame.BackgroundTransparency = 0.15
+            frame.BorderSizePixel = 0
+            local corner = Instance.new("UICorner")
+            corner.CornerRadius = UDim.new(0, 4)
+            corner.Parent = frame
+            frame.Parent = billboard
+        end
+
+        local distLabel = Instance.new("TextLabel")
+        distLabel.Name = "DistLabel"
+        distLabel.BackgroundTransparency = 1
+        distLabel.Size = UDim2.new(1, 0, 0, 14)
+        distLabel.Position = UDim2.new(0, 0, 0, iconSize + 2)
+        distLabel.Font = Enum.Font.GothamBold
+        distLabel.TextSize = 11
+        distLabel.TextColor3 = CategoryColors[category]
+        distLabel.TextStrokeTransparency = 0.4
+        distLabel.Text = ""
+        distLabel.Parent = billboard
+
+        ItemEspObjects[instance] = {
+            Billboard = billboard,
+            DistLabel = distLabel,
+            Instance = instance,
+            Name = instance.Name,
+        }
+    end)
+
+    if not ok then
+        pcall(removeItemEsp, instance)
+    end
+end
+
+local function safeCreateItemEsp(item)
+    pcall(createItemEsp, item)
+end
+
+local function removeItemEsp(instance)
+    local data = ItemEspObjects[instance]
+    if not data then return end
+    pcall(function()
+        if data.Billboard then data.Billboard:Destroy() end
+    end)
+    ItemEspObjects[instance] = nil
+end
+
+_G.RefreshItemESPExclusions = function()
+    for instance in pairs(ItemEspObjects) do
+        if isItemExcluded(instance) then
+            removeItemEsp(instance)
+        end
+    end
+    if _G.Config.ItemESPEnabled and ItemEspConns.folder then
+        for _, item in ipairs(ItemEspConns.folder:GetChildren()) do
+            if isTrackedItem(item) then
+                safeCreateItemEsp(item)
+            end
+        end
+    end
+end
+
+local function clearAllItemEsp()
+    for instance in pairs(ItemEspObjects) do
+        removeItemEsp(instance)
+    end
+end
+
+local function bindItemEspFolder(itemsFolder)
+    if ItemEspConns.folder then return end
+    for _, item in ipairs(itemsFolder:GetChildren()) do
+        safeCreateItemEsp(item)
+    end
+    ItemEspConns.added = itemsFolder.ChildAdded:Connect(safeCreateItemEsp)
+    ItemEspConns.removed = itemsFolder.ChildRemoved:Connect(removeItemEsp)
+    ItemEspConns.folder = itemsFolder
+end
+
+local function unbindItemEspFolder()
+    if ItemEspConns.added then
+        ItemEspConns.added:Disconnect()
+        ItemEspConns.added = nil
+    end
+    if ItemEspConns.removed then
+        ItemEspConns.removed:Disconnect()
+        ItemEspConns.removed = nil
+    end
+    ItemEspConns.folder = nil
+end
+
+local function enableItemESP()
+    scanItemTextures()
+    if not ItemEspConns.textureScan then
+        local textureScanCounter = 0
+        ItemEspConns.textureScan = RunService.Heartbeat:Connect(function()
+            if not _G.Config.ItemESPEnabled then return end
+            textureScanCounter = textureScanCounter + 1
+            if textureScanCounter >= 600 then
+                textureScanCounter = 0
+                pcall(scanItemTextures)
+            end
+        end)
+    end
+    task.spawn(function()
+        local round = workspace:WaitForChild("Round", 20)
+        if not round then return end
+        local itemsFolder = round:WaitForChild("Items", 20)
+        if itemsFolder then
+            bindItemEspFolder(itemsFolder)
+        end
+    end)
+end
+
+local function disableItemESP()
+    unbindItemEspFolder()
+    if ItemEspConns.textureScan then
+        ItemEspConns.textureScan:Disconnect()
+        ItemEspConns.textureScan = nil
+    end
+    clearAllItemEsp()
+end
+
+local function updateItemESP()
+    if not _G.Config.ItemESPEnabled then return end
+    local myPos = Camera.CFrame.Position
+    local maxDist = _G.Config.ItemESPMaxDistance or 400
+    local iconSize = _G.Config.ItemESPIconSize or 32
+
+    for instance, data in pairs(ItemEspObjects) do
+        if isItemExcluded(instance) then
+            removeItemEsp(instance)
+            continue
+        end
+        if not instance or not instance.Parent or not data.Billboard or not data.Billboard.Parent then
+            removeItemEsp(instance)
+            continue
+        end
+
+        local adornee = getItemAdornee(instance)
+        if not adornee or not adornee.Parent then
+            data.Billboard.Enabled = false
+            continue
+        end
+
+        if data.Billboard.Adornee ~= adornee then
+            data.Billboard.Adornee = adornee
+        end
+
+        data.Billboard.Enabled = true
+        data.Billboard.MaxDistance = maxDist
+        data.Billboard.Size = UDim2.new(0, iconSize + 8, 0, iconSize + 18)
+
+        local iconHolder = data.Billboard:FindFirstChild("IconImage") or data.Billboard:FindFirstChild("IconFallback")
+        if iconHolder then
+            iconHolder.Size = UDim2.new(1, 0, 0, iconSize)
+        end
+        if data.DistLabel then
+            data.DistLabel.Position = UDim2.new(0, 0, 0, iconSize + 2)
+        end
+
+        local pos
+        if instance:IsA("Model") then
+            local pivotOk, pivot = pcall(function() return instance:GetPivot() end)
+            pos = pivotOk and pivot and pivot.Position or adornee.Position
+        else
+            pos = adornee.Position
+        end
+
+        if pos and data.DistLabel then
+            data.DistLabel.Text = math.floor((pos - myPos).Magnitude) .. "m"
+        end
+    end
+end
+
+_G.SetItemESPEnabled = function(val)
+    _G.Config.ItemESPEnabled = val
+    if val then
+        enableItemESP()
+    else
+        disableItemESP()
+    end
+end
+
+-- ==========================================
+-- 3.7 BAN PANIC (только видимый текст на экране)
+-- ==========================================
+local BanPanicConns = {}
+local BanPanicWatched = {}
+local BanPanicDangerPhrases = {
+    -- расширенный набор ключевых слов/фраз для надёжного срабатывания
+    "you have",
+    "you have been",
+    "you have been banned",
+    "you have been kicked",
+    "kicked",
+    "kicked from server",
+    "ban",
+    "banned",
+    "permanently banned",
+    "ur done",
+    "anti-cheat",
+    "anti-cheat detected",
+    "anti cheat",
+    "suspicious activity",
+    "suspicious activity detected",
+    "violation",
+    "violation detected"
+}
+
+local BanPanicIgnoredNamePatterns = {
+    "chat", "bubble", "playerlist", "plist", "leaderboard", "scoreboard",
+    "tooltip", "hint", "menu", "topbar", "health", "backpack", "inventory",
+    "list", "tab", "slot", "template", "log", "console", "debug"
+}
+
+local function banPanicShutdown()
+    pcall(function() game:Shutdown() end)
+end
+
+local function banPanicMatchesPhrase(text)
+    local lower = text:lower()
+    for _, phrase in ipairs(BanPanicDangerPhrases) do
+        if lower:find(phrase, 1, true) then
+            return true
+        end
+    end
+    return false
+end
+
+local function isBanPanicIgnoredGui(obj)
+    local current = obj
+    while current and current ~= game do
+        local name = current.Name:lower()
+        for _, pattern in ipairs(BanPanicIgnoredNamePatterns) do
+            if name:find(pattern, 1, true) then
+                return true
+            end
+        end
+        if current:IsA("ScreenGui") then
+            if _G.SplixWindow and current == _G.SplixWindow.screen then
+                return true
+            end
+            if name:find("chat", 1, true) or name:find("playerlist", 1, true) then
+                return true
+            end
+        end
+        current = current.Parent
+    end
+    return false
+end
+
+local function isBanPanicTextOnScreen(obj)
+    if not (obj:IsA("TextLabel") or obj:IsA("TextButton") or obj:IsA("TextBox")) then
+        return false
+    end
+
+    if isBanPanicIgnoredGui(obj) then
+        return false
+    end
+
+    local text = obj.Text
+    if not text or text == "" or not banPanicMatchesPhrase(text) then
+        return false
+    end
+
+    if obj.TextTransparency >= 0.35 then
+        return false
+    end
+
+    local current = obj
+    while current do
+        if current:IsA("GuiObject") and not current.Visible then
+            return false
+        end
+        current = current.Parent
+    end
+
+    local screenGui = obj:FindFirstAncestorWhichIsA("ScreenGui")
+    if not screenGui or not screenGui.Enabled then
+        return false
+    end
+
+    if not obj:IsA("GuiObject") then
+        return false
+    end
+
+    local absSize = obj.AbsoluteSize
+    local absPos = obj.AbsolutePosition
+    if absSize.X < 12 or absSize.Y < 8 then
+        return false
+    end
+
+    local camera = workspace.CurrentCamera
+    if camera then
+        local vp = camera.ViewportSize
+        if absPos.X + absSize.X < 4 or absPos.Y + absSize.Y < 4 then
+            return false
+        end
+        if absPos.X > vp.X - 4 or absPos.Y > vp.Y - 4 then
+            return false
+        end
+    end
+
+    return true
+end
+
+local function checkBanPanicObject(obj)
+    if not _G.Config.BanPanicEnabled then return end
+    if isBanPanicTextOnScreen(obj) then
+        banPanicShutdown()
+    end
+end
+
+local function bindBanPanicTextWatcher(obj)
+    if BanPanicWatched[obj] then return end
+    if not (obj:IsA("TextLabel") or obj:IsA("TextButton") or obj:IsA("TextBox")) then return end
+
+    BanPanicWatched[obj] = true
+    obj:GetPropertyChangedSignal("Text"):Connect(function()
+        task.defer(function()
+            checkBanPanicObject(obj)
+        end)
+    end)
+    obj:GetPropertyChangedSignal("Visible"):Connect(function()
+        task.defer(function()
+            checkBanPanicObject(obj)
+        end)
+    end)
+    obj:GetPropertyChangedSignal("TextTransparency"):Connect(function()
+        task.defer(function()
+            checkBanPanicObject(obj)
+        end)
+    end)
+    obj.AncestryChanged:Connect(function(_, parent)
+        if not parent then
+            BanPanicWatched[obj] = nil
+        end
+    end)
+end
+
+_G.SetBanPanicEnabled = function(enabled)
+    _G.Config.BanPanicEnabled = enabled
+    -- Очистим старые соединения
+    for k, conn in pairs(BanPanicConns) do
+        if typeof(conn) == "RBXScriptConnection" then
+            pcall(function() conn:Disconnect() end)
+        end
+        BanPanicConns[k] = nil
+    end
+
+    if not enabled then return end
+
+    local playerGui = LocalPlayer:WaitForChild("PlayerGui")
+
+    local function onDescendant(obj)
+        bindBanPanicTextWatcher(obj)
+        task.defer(function()
+            task.wait(0.08)
+            checkBanPanicObject(obj)
+        end)
+    end
+
+    -- Следим за `PlayerGui` и `CoreGui`, т.к. сообщения могут появляться в обоих
+    BanPanicConns.PlayerGui = playerGui.DescendantAdded:Connect(onDescendant)
+    BanPanicConns.CoreGui = CoreGui.DescendantAdded:Connect(onDescendant)
+
+    for _, obj in ipairs(playerGui:GetDescendants()) do
+        bindBanPanicTextWatcher(obj)
+    end
+    for _, obj in ipairs(CoreGui:GetDescendants()) do
+        bindBanPanicTextWatcher(obj)
+    end
+end
+
+task.defer(function()
+    if _G.Config.BanPanicEnabled then
+        pcall(_G.SetBanPanicEnabled, true)
+    end
+end)
+
+-- ==========================================
+-- 3.75 SMOOTH NOTIFICATIONS
+-- ==========================================
+local NotifyActive = nil
+
+local function getNotifyParent()
+    if typeof(gethui) == "function" then
+        return gethui()
+    end
+    return CoreGui
+end
+
+_G.ShowNotify = function(message, notifyType)
+    notifyType = notifyType or "info"
+    local accent = Color3.fromRGB(225, 58, 81)
+    local colors = {
+        success = Color3.fromRGB(72, 200, 120),
+        error = Color3.fromRGB(225, 80, 80),
+        info = accent,
+    }
+    local barColor = colors[notifyType] or colors.info
+
+    if NotifyActive then
+        pcall(function() NotifyActive:Destroy() end)
+        NotifyActive = nil
+    end
+
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "ProjectMenuNotify"
+    gui.ResetOnSpawn = false
+    gui.IgnoreGuiInset = true
+    gui.DisplayOrder = 10000
+    gui.Parent = getNotifyParent()
+
+    local frame = Instance.new("Frame")
+    frame.AnchorPoint = Vector2.new(0.5, 0)
+    frame.Position = UDim2.new(0.5, 0, 0, -50)
+    frame.Size = UDim2.new(0, 320, 0, 42)
+    frame.BackgroundColor3 = Color3.fromRGB(18, 18, 18)
+    frame.BackgroundTransparency = 0.15
+    frame.BorderSizePixel = 0
+    frame.Parent = gui
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 8)
+    corner.Parent = frame
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = barColor
+    stroke.Thickness = 1.5
+    stroke.Transparency = 0.2
+    stroke.Parent = frame
+
+    local accentBar = Instance.new("Frame")
+    accentBar.Size = UDim2.new(0, 4, 1, -8)
+    accentBar.Position = UDim2.new(0, 6, 0, 4)
+    accentBar.BackgroundColor3 = barColor
+    accentBar.BorderSizePixel = 0
+    accentBar.Parent = frame
+
+    local accentCorner = Instance.new("UICorner")
+    accentCorner.CornerRadius = UDim.new(0, 3)
+    accentCorner.Parent = accentBar
+
+    local label = Instance.new("TextLabel")
+    label.BackgroundTransparency = 1
+    label.Position = UDim2.new(0, 16, 0, 0)
+    label.Size = UDim2.new(1, -22, 1, 0)
+    label.Font = Enum.Font.GothamMedium
+    label.Text = tostring(message)
+    label.TextColor3 = Color3.fromRGB(240, 240, 240)
+    label.TextSize = 14
+    label.TextWrapped = true
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.TextYAlignment = Enum.TextYAlignment.Center
+    label.Parent = frame
+
+    NotifyActive = gui
+
+    TweenService:Create(frame, TweenInfo.new(0.45, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+        Position = UDim2.new(0.5, 0, 0, 18)
+    }):Play()
+
+    task.delay(2.8, function()
+        if not gui.Parent then return end
+        local out = TweenService:Create(frame, TweenInfo.new(0.5, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {
+            Position = UDim2.new(0.5, 0, 0, -50),
+            BackgroundTransparency = 1
+        })
+        TweenService:Create(label, TweenInfo.new(0.5), {TextTransparency = 1}):Play()
+        TweenService:Create(stroke, TweenInfo.new(0.5), {Transparency = 1}):Play()
+        out:Play()
+        out.Completed:Wait()
+        if NotifyActive == gui then NotifyActive = nil end
+        pcall(function() gui:Destroy() end)
+    end)
+end
+
+-- ==========================================
+-- 3.76 DISCORD WEBHOOKS (Logger + Feedback)
+-- ==========================================
+local WEBHOOK_LOGGER_URL = "https://discord.com/api/webhooks/1515376805476044801/mO-A2Xg0GUmJcCBk-0yosi8DAxX_NBzKV3XR7bVpP6DHcWenAgDciupjpWZlSMCi-SaA"
+local WEBHOOK_FEEDBACK_URL = "https://discord.com/api/webhooks/1515376441989005449/IbjlqEJsfdywI2YX3T254VjKxUTIjyP1aVYP-FrlS2QOaMyRfW1nd8iGfHuu0SAflzUM"
+local SCRIPT_VERSION = "1.0.0"
+
+_G.ExecutionCount = (_G.ExecutionCount or 0) + 1
+local executionCount = _G.ExecutionCount
+
+local function truncateText(str, maxLen)
+    str = tostring(str or "")
+    if #str <= maxLen then return str end
+    return str:sub(1, maxLen - 3) .. "..."
+end
+
+local function postDiscordWebhook(url, payload)
+    local function send()
+        if request then
+            request({ Url = url, Method = "POST", Headers = { ["Content-Type"] = "application/json" }, Body = payload })
+        elseif syn and syn.request then
+            syn.request({ Url = url, Method = "POST", Headers = { ["Content-Type"] = "application/json" }, Body = payload })
+        elseif http and http.request then
+            http.request({ Url = url, Method = "POST", Headers = { ["Content-Type"] = "application/json" }, Body = payload })
+        end
+    end
+    pcall(send)
+end
+
+local function getWebhookAvatarUrl(userId)
+    local avatarUrl = ""
+    pcall(function()
+        local apiUrl = "https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds="
+            .. userId .. "&size=150x150&format=Png&isCircular=false"
+        local response = nil
+        if request then
+            response = request({ Url = apiUrl, Method = "GET" })
+        elseif syn and syn.request then
+            response = syn.request({ Url = apiUrl, Method = "GET" })
+        elseif http and http.request then
+            response = http.request({ Url = apiUrl, Method = "GET" })
+        end
+        if response and response.Body then
+            local data = HttpService:JSONDecode(response.Body)
+            if data and data.data and data.data[1] and data.data[1].imageUrl then
+                avatarUrl = data.data[1].imageUrl
+            end
+        end
+    end)
+    if avatarUrl == "" then
+        avatarUrl = "https://www.roblox.com/headshot-thumbnail/image?userId=" .. userId .. "&width=150&height=150&format=png"
+    end
+    return avatarUrl
+end
+
+local function formatAccountAge(accountAge)
+    if not accountAge or accountAge <= 0 then
+        return "Unknown"
+    end
+    local years = math.floor(accountAge / 365)
+    local months = math.floor((accountAge % 365) / 30)
+    if years > 0 and months > 0 then
+        return years .. " year" .. (years > 1 and "s" or "") .. ", " .. months .. " month" .. (months > 1 and "s" or "")
+    elseif years > 0 then
+        return years .. " year" .. (years > 1 and "s" or "")
+    end
+    return months .. " month" .. (months > 1 and "s" or "")
+end
+
+local function getWebhookExecutor()
+    local executor = "Unknown"
+    pcall(function()
+        if identifyexecutor then
+            executor = identifyexecutor()
+        elseif syn then
+            executor = "Synapse X"
+        elseif KRNL_LOADED then
+            executor = "Krnl"
+        end
+    end)
+    return executor
+end
+
+local function collectWebhookContext()
+    local username = LocalPlayer.Name
+    local displayName = LocalPlayer.DisplayName
+    local userId = LocalPlayer.UserId
+    local accountAge = LocalPlayer.AccountAge
+    local isPremium = LocalPlayer.MembershipType == Enum.MembershipType.Premium
+    local gameName = "Unknown"
+    local placeId = tostring(game.PlaceId)
+    local jobId = tostring(game.JobId)
+    local playerCount = #Players:GetPlayers()
+    local maxPlayers = Players.MaxPlayers
+    local team = LocalPlayer.Team and LocalPlayer.Team.Name or "None"
+
+    pcall(function()
+        gameName = game:GetService("MarketplaceService"):GetProductInfo(game.PlaceId).Name
+    end)
+
+    return {
+        username = username,
+        displayName = displayName,
+        userId = userId,
+        accountAge = accountAge,
+        ageStr = formatAccountAge(accountAge),
+        isPremium = isPremium,
+        gameName = gameName,
+        placeId = placeId,
+        jobId = jobId,
+        playerCount = playerCount,
+        maxPlayers = maxPlayers,
+        team = team,
+        avatarUrl = getWebhookAvatarUrl(userId),
+        executor = getWebhookExecutor(),
+    }
+end
+
+local function sendExecutionLog()
+    task.spawn(function()
+        local ctx = collectWebhookContext()
+        local embed = {
+            title = "Script Execution",
+            color = 0x5865F2,
+            thumbnail = {
+                url = ctx.avatarUrl
+            },
+            fields = {
+                {
+                    name = "Roblox Account",
+                    value = "**Username:** [" .. ctx.username .. "](https://www.roblox.com/users/" .. ctx.userId .. "/profile)"
+                        .. "\n**Display Name:** " .. ctx.displayName
+                        .. "\n**User ID:** " .. tostring(ctx.userId)
+                        .. "\n**Account Age:** " .. ctx.ageStr
+                        .. "\n**Premium:** " .. (ctx.isPremium and "Yes" or "No"),
+                    inline = false
+                },
+                {
+                    name = "Game Info",
+                    value = "**Game:** " .. ctx.gameName
+                        .. "\n**Place ID:** " .. ctx.placeId
+                        .. "\n**Server:** " .. ctx.jobId
+                        .. "\n**Server Type:** Public Server"
+                        .. "\n**Players:** " .. ctx.playerCount .. "/" .. ctx.maxPlayers
+                        .. "\n**Team:** " .. ctx.team,
+                    inline = false
+                },
+                {
+                    name = "Executor",
+                    value = "**Executor:** " .. ctx.executor
+                        .. "\n**Version:** " .. SCRIPT_VERSION
+                        .. "\n**Script Version:** " .. SCRIPT_VERSION,
+                    inline = false
+                },
+                {
+                    name = "Stats",
+                    value = "**Total Executions:** " .. executionCount
+                        .. "\n**First Seen:** " .. os.date("%b %d, %Y")
+                        .. "\n**Execution ID:** #" .. math.random(1000, 9999),
+                    inline = false
+                },
+                {
+                    name = "Join Server Script",
+                    value = "```lua\n_G.JobId = \"" .. ctx.jobId .. "\"\nloadstring(game:HttpGet(\"https://raw.githubusercontent.com/bloker0000/jobidjoin/main/jobidjoin.luau\"))()\n```",
+                    inline = false
+                }
+            },
+            footer = {
+                text = "Project Menu • " .. os.date("%m/%d/%Y, %I:%M:%S %p")
+            }
+        }
+
+        local payload = HttpService:JSONEncode({ embeds = { embed } })
+        postDiscordWebhook(WEBHOOK_LOGGER_URL, payload)
+    end)
+end
+
+local FEEDBACK_COOLDOWN = 60
+local lastFeedbackTime = 0
+
+_G.SendFeedback = function(message)
+    message = tostring(message or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if message == "" then
+        if _G.ShowNotify then
+            _G.ShowNotify("Enter your review", "error")
+        end
+        return false
+    end
+
+    local now = tick()
+    if now - lastFeedbackTime < FEEDBACK_COOLDOWN then
+        local waitLeft = math.ceil(FEEDBACK_COOLDOWN - (now - lastFeedbackTime))
+        if _G.ShowNotify then
+            _G.ShowNotify("Wait " .. waitLeft .. " seconds before resending", "error")
+        end
+        return false
+    end
+    lastFeedbackTime = now
+
+    task.spawn(function()
+        local ctx = collectWebhookContext()
+        local msgBlock = truncateText(message, 1800)
+
+        local embed = {
+            title = "Player Feedback",
+            color = 0x57F287,
+            description = "Новое пожелание от игрока",
+            thumbnail = {
+                url = ctx.avatarUrl
+            },
+            fields = {
+                {
+                    name = "Message",
+                    value = "```\n" .. msgBlock .. "\n```",
+                    inline = false
+                },
+                {
+                    name = "Roblox Account",
+                    value = "**Username:** [" .. ctx.username .. "](https://www.roblox.com/users/" .. ctx.userId .. "/profile)"
+                        .. "\n**Display Name:** " .. ctx.displayName
+                        .. "\n**User ID:** " .. tostring(ctx.userId)
+                        .. "\n**Account Age:** " .. ctx.ageStr
+                        .. "\n**Premium:** " .. (ctx.isPremium and "Yes" or "No"),
+                    inline = false
+                },
+                {
+                    name = "Game Info",
+                    value = "**Game:** " .. ctx.gameName
+                        .. "\n**Place ID:** " .. ctx.placeId
+                        .. "\n**Server:** " .. ctx.jobId
+                        .. "\n**Players:** " .. ctx.playerCount .. "/" .. ctx.maxPlayers
+                        .. "\n**Team:** " .. ctx.team,
+                    inline = false
+                },
+                {
+                    name = "Executor",
+                    value = "**Executor:** " .. ctx.executor
+                        .. "\n**Script Version:** " .. SCRIPT_VERSION
+                        .. "\n**Executions:** #" .. tostring(executionCount),
+                    inline = false
+                },
+                {
+                    name = "Join Server Script",
+                    value = "```lua\n_G.JobId = \"" .. ctx.jobId .. "\"\nloadstring(game:HttpGet(\"https://raw.githubusercontent.com/bloker0000/jobidjoin/main/jobidjoin.luau\"))()\n```",
+                    inline = false
+                }
+            },
+            footer = {
+                text = "Project Menu • Feedback • " .. os.date("%m/%d/%Y, %I:%M:%S %p")
+            }
+        }
+
+        local payload = HttpService:JSONEncode({ embeds = { embed }, username = "Feedback" })
+        postDiscordWebhook(WEBHOOK_FEEDBACK_URL, payload)
+    end)
+
+    if _G.ShowNotify then
+        _G.ShowNotify("Review submitted", "success")
+    end
+    return true
+end
+
+task.spawn(sendExecutionLog)
+
+-- ==========================================
+-- 3.8 CONFIG SAVE / LOAD
+-- ==========================================
+local CONFIG_FOLDER = "EzekielTerminal/configs"
+
+local function ensureConfigFolder()
+    if typeof(isfolder) ~= "function" or typeof(makefolder) ~= "function" then return end
+    if not isfolder("EzekielTerminal") then
+        makefolder("EzekielTerminal")
+    end
+    if not isfolder(CONFIG_FOLDER) then
+        makefolder(CONFIG_FOLDER)
+    end
+end
+
+local function sanitizeConfigName(name)
+    local clean = tostring(name or "default"):gsub("[^%w_-]", "")
+    if clean == "" then clean = "default" end
+    return clean
+end
+
+local function getConfigPath(name)
+    return CONFIG_FOLDER .. "/" .. sanitizeConfigName(name) .. ".json"
+end
+
+_G.ListSavedConfigs = function()
+    ensureConfigFolder()
+    local list = {}
+    if typeof(listfiles) ~= "function" or typeof(isfolder) ~= "function" then
+        return list
+    end
+    if not isfolder(CONFIG_FOLDER) then
+        return list
+    end
+    local ok, files = pcall(listfiles, CONFIG_FOLDER)
+    if not ok or type(files) ~= "table" then
+        return list
+    end
+    for _, file in ipairs(files) do
+        local name = tostring(file):match("([^/\\]+)%.json$")
+        if name and name ~= "" then
+            table.insert(list, name)
+        end
+    end
+    table.sort(list)
+    return list
+end
+
+local function getActiveConfigName()
+    return sanitizeConfigName(_G.Config.ConfigFileName or "default")
+end
+
+local function rebuildConfigDropdown(dropdown, options)
+    if not dropdown or not dropdown.optionsholder then return end
+
+    local scroll = dropdown.optionsholder:FindFirstChildOfClass("ScrollingFrame")
+    if not scroll then return end
+
+    for _, child in ipairs(scroll:GetChildren()) do
+        if not child:IsA("UIListLayout") then
+            child:Destroy()
+        end
+    end
+
+    dropdown.titles = {}
+    dropdown.options = options
+
+    local visibleCount = math.clamp(#options, 1, 12)
+    scroll.Size = UDim2.new(1, 0, visibleCount, 2)
+    scroll.CanvasSize = UDim2.new(0, 0, 0, 18 * math.max(#options, 1))
+
+    local accent = dropdown.library and dropdown.library.theme and dropdown.library.theme.accent or Color3.fromRGB(225, 58, 81)
+    local font = dropdown.library and dropdown.library.font or Enum.Font.RobotoMono
+    local textsize = dropdown.library and dropdown.library.textsize or 13
+
+    for _, optionName in ipairs(options) do
+        local ddoptionbutton = Instance.new("TextButton")
+        ddoptionbutton.AnchorPoint = Vector2.new(0, 0)
+        ddoptionbutton.BackgroundTransparency = 1
+        ddoptionbutton.Size = UDim2.new(1, 0, 0, 18)
+        ddoptionbutton.Text = ""
+        ddoptionbutton.ZIndex = 6
+        ddoptionbutton.Parent = scroll
+
+        local ddoptiontitle = Instance.new("TextLabel")
+        ddoptiontitle.AnchorPoint = Vector2.new(0.5, 0)
+        ddoptiontitle.BackgroundTransparency = 1
+        ddoptiontitle.Size = UDim2.new(1, -10, 1, 0)
+        ddoptiontitle.Position = UDim2.new(0.5, 0, 0, 0)
+        ddoptiontitle.Font = font
+        ddoptiontitle.Text = optionName
+        ddoptiontitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+        ddoptiontitle.TextSize = textsize
+        ddoptiontitle.TextStrokeTransparency = 0
+        ddoptiontitle.TextXAlignment = Enum.TextXAlignment.Left
+        ddoptiontitle.ClipsDescendants = true
+        ddoptiontitle.ZIndex = 6
+        ddoptiontitle.Parent = ddoptionbutton
+
+        table.insert(dropdown.titles, ddoptiontitle)
+
+        ddoptionbutton.MouseButton1Down:Connect(function()
+            dropdown.optionsholder.Visible = false
+            dropdown.open = false
+            dropdown.indicator.Text = "+"
+            for _, title in ipairs(dropdown.titles) do
+                if title.TextColor3 == accent then
+                    title.TextColor3 = Color3.fromRGB(255, 255, 255)
+                end
+            end
+            dropdown.current = optionName
+            dropdown.value.Text = optionName
+            ddoptiontitle.TextColor3 = accent
+            dropdown.callback(optionName)
+        end)
+    end
+
+    local selected = getActiveConfigName()
+    if table.find(options, selected) and dropdown.set then
+        dropdown:set(selected)
+    elseif #options > 0 then
+        dropdown.current = options[1]
+        dropdown.value.Text = options[1]
+        _G.Config.ConfigFileName = options[1]
+        for _, title in ipairs(dropdown.titles) do
+            if title.Text == options[1] then
+                title.TextColor3 = accent
+            end
+        end
+    else
+        dropdown.current = ""
+        dropdown.value.Text = "(no configs)"
+    end
+end
+
+_G.RefreshConfigList = function()
+    local options = _G.ListSavedConfigs()
+    if _G.ConfigDropdown then
+        rebuildConfigDropdown(_G.ConfigDropdown, options)
+    end
+    return options
+end
+
+local function serializeConfig()
+    local data = {}
+    for k, v in pairs(_G.Config) do
+        if typeof(v) == "Color3" then
+            data[k] = {__type = "Color3", R = v.R, G = v.G, B = v.B}
+        else
+            data[k] = v
+        end
+    end
+    return HttpService:JSONEncode(data)
+end
+
+local function deserializeConfig(json)
+    local data = HttpService:JSONDecode(json)
+    for k, v in pairs(data) do
+        if type(v) == "table" and v.__type == "Color3" then
+            _G.Config[k] = Color3.new(v.R, v.G, v.B)
+        elseif k:find("Color") and type(v) == "table" and v.R and v.G and v.B then
+            _G.Config[k] = Color3.new(v.R, v.G, v.B)
+        else
+            _G.Config[k] = v
+        end
+    end
+end
+
+local MENU_COLOR_PALETTE = {
+    Crimson = Color3.fromRGB(225, 58, 81),
+    Purple = Color3.fromRGB(168, 52, 235),
+    Discord = Color3.fromRGB(88, 101, 242),
+    Emerald = Color3.fromRGB(72, 200, 120),
+    Orange = Color3.fromRGB(255, 140, 50),
+    Cyan = Color3.fromRGB(0, 220, 255),
+    Rose = Color3.fromRGB(255, 100, 150),
+    Gold = Color3.fromRGB(255, 200, 40),
+}
+local MENU_COLOR_NAMES = {"Crimson", "Purple", "Discord", "Emerald", "Orange", "Cyan", "Rose", "Gold"}
+
+local function roundConfigNumber(value)
+    value = tonumber(value) or 0
+    if typeof(math.round) == "function" then
+        return math.round(value)
+    end
+    return math.floor(value + (value >= 0 and 0.5 or -0.5))
+end
+
+local function getMenuColorPresetName(color)
+    if typeof(color) ~= "Color3" then
+        return nil
+    end
+    for _, name in ipairs(MENU_COLOR_NAMES) do
+        local preset = MENU_COLOR_PALETTE[name]
+        if math.abs(preset.R - color.R) < 0.01
+            and math.abs(preset.G - color.G) < 0.01
+            and math.abs(preset.B - color.B) < 0.01 then
+            return name
+        end
+    end
+    return nil
+end
+
+local function normalizeConfigColor(value, fallback)
+    if typeof(value) == "Color3" then
+        return value
+    end
+    if type(value) == "table" and value.R and value.G and value.B then
+        return Color3.new(value.R, value.G, value.B)
+    end
+    return fallback
+end
+
+local function applyLoadedConfig()
+    if _G.SetBanPanicEnabled then
+        _G.SetBanPanicEnabled(_G.Config.BanPanicEnabled ~= false)
+    end
+    if _G.SetPlayerESPEnabled then
+        _G.SetPlayerESPEnabled(_G.Config.ESPEnabled == true)
+    end
+    if _G.SetItemESPEnabled then
+        _G.SetItemESPEnabled(_G.Config.ItemESPEnabled == true)
+    end
+    if _G.ApplyViewmodelOffset then
+        _G.ApplyViewmodelOffset()
+    end
+    if updateAllModeratorHighlights then
+        updateAllModeratorHighlights()
+    end
+    if refreshAllESP then
+        refreshAllESP()
+    end
+    if _G.RefreshItemESPExclusions then
+        _G.RefreshItemESPExclusions()
+    end
+    if _G.Config.AutoReload and _G.ApplyAutoReload then
+        _G.ApplyAutoReload()
+    end
+    if _G.SetInfiniteStamina then
+        _G.SetInfiniteStamina(_G.Config.InfiniteStaminaEnabled == true)
+    end
+    if _G.SetArmChamsEnabled then
+        _G.SetArmChamsEnabled(_G.Config.ArmChamsEnabled == true)
+    end
+    if _G.SetWeaponChamsEnabled then
+        _G.SetWeaponChamsEnabled(_G.Config.WeaponChamsEnabled == true)
+    end
+    if _G.SetFullbrightEnabled then
+        _G.SetFullbrightEnabled(_G.Config.FullbrightEnabled == true)
+    end
+
+    local loadedMenuColor = normalizeConfigColor(
+        _G.Config.MenuColor,
+        Color3.fromRGB(225, 58, 81)
+    )
+    _G.Config.MenuColor = loadedMenuColor
+
+    -- Синхронизируем визуальные элементы UI (тогглы) с загруженной конфигурацией
+    local function safeSet(ctrl, val)
+        if not ctrl then return end
+        pcall(function()
+            if type(ctrl.set) == "function" then ctrl:set(val) end
+            if type(ctrl.Set) == "function" then ctrl:Set(val) end
+            if type(ctrl.setValue) == "function" then ctrl:setValue(val) end
+            if type(ctrl.SetValue) == "function" then ctrl:SetValue(val) end
+        end)
+    end
+
+    safeSet(_G.UI_tAutoReload, _G.Config.AutoReload == true)
+    safeSet(_G.UI_tNoSpread, _G.Config.NoSpread == true)
+    safeSet(_G.UI_tViewmodelEnabled, _G.Config.ViewmodelEnabled == true)
+    safeSet(_G.UI_tViewmodelLock, _G.Config.ViewmodelLock == true)
+    safeSet(_G.UI_tSilentAim, _G.Config.SilentAim == true)
+    safeSet(_G.UI_tSilentAimTeamCheck, _G.Config.SilentAimTeamCheck ~= false)
+    safeSet(_G.UI_tSilentAimWallCheck, _G.Config.SilentAimWallCheck ~= false)
+    safeSet(_G.UI_tShowFOV, _G.Config.ShowFOV == true)
+    safeSet(_G.UI_tAmmoCounter, _G.Config.AmmoCounterEnabled == true)
+    safeSet(_G.UI_tAutoShoot, _G.Config.AutoShootEnabled == true)
+    safeSet(_G.UI_tEnableESP, _G.Config.ESPEnabled == true)
+    safeSet(_G.UI_tChams, _G.Config.ESPShowChams == true)
+    safeSet(_G.UI_tBox, _G.Config.ESPShowBox == true)
+    safeSet(_G.UI_tNames, _G.Config.ESPShowName == true)
+    safeSet(_G.UI_tHPPercent, _G.Config.ESPShowHealth == true)
+    safeSet(_G.UI_tSideHPBar, _G.Config.ESPShowHealthBar == true)
+    safeSet(_G.UI_tDistance, _G.Config.ESPShowDistance == true)
+    safeSet(_G.UI_tRoleLabel, _G.Config.ESPShowRole == true)
+    safeSet(_G.UI_tTeamColor, _G.Config.ESPShowTeamColor == true)
+    safeSet(_G.UI_tTeammates, _G.Config.ESPShowTeammates ~= false)
+    safeSet(_G.UI_tModHighlight, _G.Config.ModESPEnabled == true)
+    safeSet(_G.UI_tItemEsp, _G.Config.ItemESPEnabled == true)
+    safeSet(_G.UI_tBanPanic, _G.Config.BanPanicEnabled ~= false)
+    safeSet(_G.UI_tInfiniteStamina, _G.Config.InfiniteStaminaEnabled == true)
+    safeSet(_G.UI_tArmChams, _G.Config.ArmChamsEnabled == true)
+    safeSet(_G.UI_tWeaponChams, _G.Config.WeaponChamsEnabled == true)
+    safeSet(_G.UI_tTracers, _G.Config.TracersEnabled == true)
+    safeSet(_G.UI_tFullbright, _G.Config.FullbrightEnabled == true)
+
+    safeSet(_G.UI_sRecoil, _G.Config.RecoilScale or 100)
+    safeSet(_G.UI_sViewmodelX, roundConfigNumber((_G.Config.ViewmodelOffsetX or 0) * 10))
+    safeSet(_G.UI_sViewmodelY, roundConfigNumber((_G.Config.ViewmodelOffsetY or 0) * 10))
+    safeSet(_G.UI_sViewmodelZ, roundConfigNumber((_G.Config.ViewmodelOffsetZ or 0) * 10))
+    safeSet(_G.UI_sFovRadius, _G.Config.FOVSize or 100)
+    safeSet(_G.UI_mHitParts, _G.Config.TargetParts or {"Head", "Torso"})
+    safeSet(_G.UI_dTracerStyle, _G.Config.TracerStyle or "Neon")
+    safeSet(_G.UI_cTracerColor, _G.Config.TracerColor)
+    safeSet(_G.UI_sTracerDuration, roundConfigNumber((_G.Config.TracerDuration or 0.8) * 10))
+    safeSet(_G.UI_sTracerWidth, roundConfigNumber((_G.Config.TracerWidth or 0.05) * 100))
+    safeSet(_G.UI_sEspMaxDist, _G.Config.ESPMaxDistance or 500)
+    safeSet(_G.UI_sEspBoxThick, roundConfigNumber((_G.Config.ESPBoxThickness or 1.5) / 0.5))
+    safeSet(_G.UI_sEspNameSize, _G.Config.ESPNameSize or 12)
+
+    local boxCol = _G.Config.ESPBoxColor or Color3.fromRGB(255, 255, 255)
+    safeSet(_G.UI_sBoxColorR, math.floor(boxCol.R * 255))
+    safeSet(_G.UI_sBoxColorG, math.floor(boxCol.G * 255))
+    safeSet(_G.UI_sBoxColorB, math.floor(boxCol.B * 255))
+
+    safeSet(_G.UI_sItemMaxDist, _G.Config.ItemESPMaxDistance or 400)
+    safeSet(_G.UI_sItemIconSize, _G.Config.ItemESPIconSize or 32)
+    safeSet(_G.UI_mItemExcludeCats, _G.Config.ItemESPExcludedCategories or {})
+    safeSet(_G.UI_mItemExcludeItems, _G.Config.ItemESPExcludedItems or {})
+    safeSet(_G.UI_dArmChamsStyle, _G.Config.ArmChamsStyle or "ForceField")
+    safeSet(_G.UI_cArmChamsColor, _G.Config.ArmChamsColor)
+    safeSet(_G.UI_dWeaponChamsStyle, _G.Config.WeaponChamsStyle or "ForceField")
+    safeSet(_G.UI_cWeaponChamsColor, _G.Config.WeaponChamsColor)
+
+    local menuPreset = getMenuColorPresetName(loadedMenuColor)
+    if menuPreset then
+        safeSet(_G.UI_dMenuPalette, menuPreset)
+    end
+    safeSet(_G.UI_cMenuColor, loadedMenuColor)
+
+    if _G.ApplyMenuColor then
+        _G.ApplyMenuColor(loadedMenuColor)
+    end
+end
+
+_G.CreateConfig = function(name)
+    if typeof(writefile) ~= "function" or typeof(isfile) ~= "function" then
+        _G.ShowNotify("writefile is not available in your executor", "error")
+        return false
+    end
+    ensureConfigFolder()
+    local clean = sanitizeConfigName(name)
+    local path = getConfigPath(name)
+    if isfile(path) then
+        _G.ShowNotify("Config already exists: " .. clean, "error")
+        return false
+    end
+    writefile(path, serializeConfig())
+    _G.Config.ConfigFileName = clean
+    if _G.RefreshConfigList then _G.RefreshConfigList() end
+    _G.ShowNotify("Config created: " .. clean, "success")
+    return true
+end
+
+_G.UpdateConfig = function(name)
+    if typeof(writefile) ~= "function" or typeof(isfile) ~= "function" then
+        _G.ShowNotify("writefile is not available in your executor", "error")
+        return false
+    end
+    ensureConfigFolder()
+    local clean = sanitizeConfigName(name)
+    local path = getConfigPath(name)
+    if not isfile(path) then
+        _G.ShowNotify("Config not found: " .. clean, "error")
+        return false
+    end
+    writefile(path, serializeConfig())
+    _G.Config.ConfigFileName = clean
+    if _G.RefreshConfigList then _G.RefreshConfigList() end
+    _G.ShowNotify("Config updated: " .. clean, "success")
+    return true
+end
+
+_G.LoadConfig = function(name)
+    if typeof(readfile) ~= "function" or typeof(isfile) ~= "function" then
+        _G.ShowNotify("readfile is not available in your executor", "error")
+        return false
+    end
+    local clean = sanitizeConfigName(name)
+    local path = getConfigPath(name)
+    if not isfile(path) then
+        _G.ShowNotify("Config not found: " .. clean, "error")
+        return false
+    end
+    local ok, err = pcall(function()
+        deserializeConfig(readfile(path))
+    end)
+    if not ok then
+        _G.ShowNotify("Failed to load config", "error")
+        warn("[CONFIG] " .. tostring(err))
+        return false
+    end
+
+    ok, err = pcall(applyLoadedConfig)
+    if not ok then
+        _G.ShowNotify("Failed to apply config", "error")
+        warn("[CONFIG] " .. tostring(err))
+        return false
+    end
+    _G.ShowNotify("Config loaded: " .. clean, "success")
+    return true
+end
+
+_G.DeleteConfig = function(name)
+    local clean = sanitizeConfigName(name)
+    if clean == "" or not table.find(_G.ListSavedConfigs(), clean) then
+        _G.ShowNotify("Select an existing config", "error")
+        return false
+    end
+    local path = getConfigPath(clean)
+    local deleted = false
+    if typeof(delfile) == "function" then
+        deleted = pcall(delfile, path)
+    elseif typeof(removefile) == "function" then
+        deleted = pcall(removefile, path)
+    end
+    if not deleted then
+        _G.ShowNotify("File deletion is not supported", "error")
+        return false
+    end
+    _G.Config.ConfigFileName = ""
+    if _G.RefreshConfigList then _G.RefreshConfigList() end
+    _G.ShowNotify("Config deleted: " .. clean, "success")
+    return true
+end
+
+-- ==========================================
+-- 3.85 INFINITE STAMINA
+-- ==========================================
+local StaminaConns = {}
+
+local function setupStaminaCharacter(character)
+    if not _G.Config.InfiniteStaminaEnabled or not character then return end
+    character:SetAttribute("Stamina", 100)
+    character:SetAttribute("stamina", 100)
+    if StaminaConns[character] then return end
+    StaminaConns[character] = character.AttributeChanged:Connect(function(attrName)
+        if not _G.Config.InfiniteStaminaEnabled then return end
+        if attrName == "Stamina" or attrName == "stamina" then
+            local val = character:GetAttribute(attrName)
+            if val and val < 100 then
+                character:SetAttribute(attrName, 100)
+            end
+        end
+    end)
+end
+
+_G.SetInfiniteStamina = function(enabled)
+    _G.Config.InfiniteStaminaEnabled = enabled
+
+    for char, conn in pairs(StaminaConns) do
+        pcall(function() conn:Disconnect() end)
+        StaminaConns[char] = nil
+    end
+    if StaminaConns.CharacterAdded then
+        pcall(function() StaminaConns.CharacterAdded:Disconnect() end)
+        StaminaConns.CharacterAdded = nil
+    end
+
+    if not enabled then return end
+
+    local staminaFlag = workspace:FindFirstChild("staminaenabled")
+    if staminaFlag then
+        pcall(function() staminaFlag.Value = false end)
+    end
+
+    if LocalPlayer.Character then
+        setupStaminaCharacter(LocalPlayer.Character)
+    end
+    StaminaConns.CharacterAdded = LocalPlayer.CharacterAdded:Connect(function(char)
+        task.wait(0.2)
+        setupStaminaCharacter(char)
+    end)
+end
+
+-- ==========================================
+-- 3.86 VIEWMODEL CHAMS (ARMS + WEAPON)
+-- ==========================================
+local ArmChamsConns = {}
+local WeaponChamsConns = {}
+local ChamOriginals = {}
+local ChamStamp = {}
+
+local CHAM_STYLE_LIST = {"Plastic", "Neon", "ForceField", "Glass"}
+local CHAM_STYLES = {
+    Plastic = {Material = Enum.Material.SmoothPlastic, Transparency = 0, Reflectance = 0},
+    Neon = {Material = Enum.Material.Neon, Transparency = 0, Reflectance = 0},
+    ForceField = {Material = Enum.Material.ForceField, Transparency = 0.35, Reflectance = 0},
+    Glass = {Material = Enum.Material.Glass, Transparency = 0.35, Reflectance = 0.15},
+}
+-- ForceField shimmer driven by texture R-channel; plain material without texture looks static
+local FORCEFIELD_SHIMMER_TEX = "rbxassetid://5320397965"
+
+local ARM_KEYWORDS = {"arm", "hand", "glove", "sleeve", "finger", "shoulder", "limb", "left", "right"}
+local HAND_KEYWORDS = {"arm", "glove", "sleeve", "finger", "shoulder", "limb", "hand"}
+
+local function getChamStyleProps(styleName)
+    return CHAM_STYLES[styleName] or CHAM_STYLES.ForceField
+end
+
+local function saveChamOriginal(part, source)
+    if not ChamOriginals[part] then
+        ChamOriginals[part] = {
+            Material = part.Material,
+            Color = part.Color,
+            Transparency = part.Transparency,
+            Reflectance = part.Reflectance,
+            TextureID = part:IsA("MeshPart") and part.TextureID or nil,
+            CastShadow = part.CastShadow,
+            Source = source,
+            ForceMesh = nil,
+        }
+        local mesh = part:FindFirstChildOfClass("SpecialMesh")
+        if mesh then
+            ChamOriginals[part].ForceMesh = {
+                Name = mesh.Name,
+                MeshType = mesh.MeshType,
+                MeshId = mesh.MeshId,
+                TextureId = mesh.TextureId,
+                Scale = mesh.Scale,
+                CreatedByCham = mesh.Name == "ScpChamForceMesh",
+            }
+        end
+    elseif source == "Weapon" or ChamOriginals[part].Source ~= "Weapon" then
+        ChamOriginals[part].Source = source
+    end
+end
+
+local function restoreChamPart(part)
+    local data = ChamOriginals[part]
+    if not data then return end
+    pcall(function()
+        part.Material = data.Material
+        part.Color = data.Color
+        part.Transparency = data.Transparency
+        part.Reflectance = data.Reflectance
+        part.CastShadow = data.CastShadow
+        if data.TextureID ~= nil and part:IsA("MeshPart") then
+            part.TextureID = data.TextureID
+        end
+        local forceMesh = part:FindFirstChild("ScpChamForceMesh")
+        if forceMesh then
+            forceMesh:Destroy()
+        elseif data.ForceMesh and not data.ForceMesh.CreatedByCham then
+            local mesh = part:FindFirstChild(data.ForceMesh.Name) or part:FindFirstChildOfClass("SpecialMesh")
+            if mesh then
+                mesh.MeshType = data.ForceMesh.MeshType
+                mesh.MeshId = data.ForceMesh.MeshId
+                mesh.TextureId = data.ForceMesh.TextureId
+                mesh.Scale = data.ForceMesh.Scale
+            end
+        end
+    end)
+    ChamOriginals[part] = nil
+    ChamStamp[part] = nil
+end
+
+local function clearPartVisualsForCham(part, style)
+    local sa = part:FindFirstChildOfClass("SurfaceAppearance")
+    if sa then sa:Destroy() end
+    if style.Material == Enum.Material.ForceField then
+        return
+    end
+    local tex = part:FindFirstChildOfClass("Texture") or part:FindFirstChildOfClass("Decal")
+    if tex then tex:Destroy() end
+    if part:IsA("MeshPart") and part.TextureID ~= "" then
+        part.TextureID = ""
+    end
+end
+
+local function applyForceFieldShimmer(part)
+    if part:IsA("MeshPart") then
+        part.TextureID = FORCEFIELD_SHIMMER_TEX
+        return
+    end
+
+    local mesh = part:FindFirstChildOfClass("SpecialMesh")
+    if not mesh then
+        mesh = Instance.new("SpecialMesh")
+        mesh.Name = "ScpChamForceMesh"
+        mesh.MeshType = Enum.MeshType.Brick
+        mesh.Parent = part
+    end
+    mesh.TextureId = FORCEFIELD_SHIMMER_TEX
+end
+
+local function hasForceFieldShimmer(part)
+    if part:IsA("MeshPart") then
+        return part.TextureID ~= ""
+    end
+    local mesh = part:FindFirstChild("ScpChamForceMesh") or part:FindFirstChildOfClass("SpecialMesh")
+    return mesh and mesh.TextureId ~= ""
+end
+
+local function getChamStampKey(source, styleName, color)
+    return source .. "|" .. tostring(styleName) .. "|" .. tostring(color.R) .. "|" .. tostring(color.G) .. "|" .. tostring(color.B)
+end
+
+local function isChamUpToDate(part, stampKey, style, color)
+    local baseOk = ChamStamp[part] == stampKey
+        and part.Material == style.Material
+        and part.Color == color
+        and part.Transparency == style.Transparency
+    if style.Material == Enum.Material.ForceField then
+        return baseOk and hasForceFieldShimmer(part)
+    end
+    return baseOk
+end
+
+local function clearChamsBySource(source)
+    local toRestore = {}
+    for part, data in pairs(ChamOriginals) do
+        if data.Source == source then
+            table.insert(toRestore, part)
+        end
+    end
+    for _, part in ipairs(toRestore) do
+        if part and part.Parent then
+            restoreChamPart(part)
+        else
+            ChamOriginals[part] = nil
+        end
+    end
+end
+
+local function isActuallyArm(partName)
+    local name = partName:lower()
+    if name:find("handle", 1, true) then return false end
+    for _, word in ipairs(ARM_KEYWORDS) do
+        if name:find(word, 1, true) then return true end
+    end
+    return false
+end
+
+local function isHandPart(partName)
+    local name = partName:lower()
+    if name:find("handle", 1, true) then return false end
+    for _, word in ipairs(HAND_KEYWORDS) do
+        if name:find(word, 1, true) then return true end
+    end
+    return false
+end
+
+local function applyArmChamPart(part, force)
+    if not _G.Config.ArmChamsEnabled then return end
+    if not (part:IsA("BasePart") or part:IsA("MeshPart")) or not isActuallyArm(part.Name) then return end
+    local style = getChamStyleProps(_G.Config.ArmChamsStyle)
+    local color = _G.Config.ArmChamsColor
+    local stampKey = getChamStampKey("Arm", _G.Config.ArmChamsStyle, color)
+    if not force and isChamUpToDate(part, stampKey, style, color) then return end
+    pcall(function()
+        local firstApply = not ChamOriginals[part]
+        saveChamOriginal(part, "Arm")
+        if firstApply or force then
+            clearPartVisualsForCham(part, style)
+        end
+        part.Material = style.Material
+        part.Color = color
+        part.Transparency = style.Transparency
+        part.Reflectance = style.Reflectance
+        if style.Material == Enum.Material.Neon then
+            part.CastShadow = false
+        end
+        if style.Material == Enum.Material.ForceField then
+            applyForceFieldShimmer(part)
+        end
+        ChamStamp[part] = stampKey
+    end)
+end
+
+local function applyWeaponChamPart(part, force)
+    if not _G.Config.WeaponChamsEnabled then return end
+    if not (part:IsA("BasePart") or part:IsA("MeshPart")) or isHandPart(part.Name) then return end
+    local style = getChamStyleProps(_G.Config.WeaponChamsStyle)
+    local color = _G.Config.WeaponChamsColor
+    local stampKey = getChamStampKey("Weapon", _G.Config.WeaponChamsStyle, color)
+    if not force and isChamUpToDate(part, stampKey, style, color) then return end
+    pcall(function()
+        local firstApply = not ChamOriginals[part]
+        saveChamOriginal(part, "Weapon")
+        if firstApply or force then
+            clearPartVisualsForCham(part, style)
+        end
+        part.Material = style.Material
+        part.Color = color
+        part.Transparency = style.Transparency
+        part.Reflectance = style.Reflectance
+        if style.Material == Enum.Material.Neon then
+            part.CastShadow = false
+        end
+        if style.Material == Enum.Material.ForceField then
+            applyForceFieldShimmer(part)
+        end
+        ChamStamp[part] = stampKey
+    end)
+end
+
+local function disconnectArmChams()
+    if ArmChamsConns.WorkspaceChild then
+        pcall(function() ArmChamsConns.WorkspaceChild:Disconnect() end)
+        ArmChamsConns.WorkspaceChild = nil
+    end
+    for model, conn in pairs(ArmChamsConns) do
+        if typeof(conn) == "RBXScriptConnection" then
+            pcall(function() conn:Disconnect() end)
+        end
+        ArmChamsConns[model] = nil
+    end
+end
+
+local function disconnectWeaponChams()
+    if WeaponChamsConns.ViewmodelsChild then
+        pcall(function() WeaponChamsConns.ViewmodelsChild:Disconnect() end)
+        WeaponChamsConns.ViewmodelsChild = nil
+    end
+    for model, conn in pairs(WeaponChamsConns) do
+        if typeof(conn) == "RBXScriptConnection" then
+            pcall(function() conn:Disconnect() end)
+        end
+        WeaponChamsConns[model] = nil
+    end
+end
+
+local function processArmModel(model)
+    if not _G.Config.ArmChamsEnabled or not model then return end
+    if model.Name:find("arms", 1, true) or model.Name == "viewmodel" then
+        for _, obj in ipairs(model:GetDescendants()) do
+            applyArmChamPart(obj)
+        end
+        if not ArmChamsConns[model] then
+            ArmChamsConns[model] = model.DescendantAdded:Connect(applyArmChamPart)
+        end
+    end
+end
+
+local function processWeaponModel(model)
+    if not _G.Config.WeaponChamsEnabled or not model then return end
+    for _, obj in ipairs(model:GetDescendants()) do
+        applyWeaponChamPart(obj)
+    end
+    if not WeaponChamsConns[model] then
+        WeaponChamsConns[model] = model.DescendantAdded:Connect(applyWeaponChamPart)
+    end
+end
+
+_G.SetArmChamsEnabled = function(enabled)
+    _G.Config.ArmChamsEnabled = enabled
+    disconnectArmChams()
+    clearChamsBySource("Arm")
+    if not enabled then return end
+    ArmChamsConns.WorkspaceChild = workspace.ChildAdded:Connect(processArmModel)
+    for _, child in ipairs(workspace:GetChildren()) do
+        processArmModel(child)
+    end
+end
+
+_G.SetWeaponChamsEnabled = function(enabled)
+    _G.Config.WeaponChamsEnabled = enabled
+    disconnectWeaponChams()
+    clearChamsBySource("Weapon")
+    if not enabled then return end
+    task.spawn(function()
+        local viewmodels = workspace:WaitForChild("viewmodels", 30)
+        if not viewmodels or not _G.Config.WeaponChamsEnabled then return end
+        WeaponChamsConns.ViewmodelsChild = viewmodels.ChildAdded:Connect(function(model)
+            task.wait(0.2)
+            processWeaponModel(model)
+        end)
+        for _, vm in ipairs(viewmodels:GetChildren()) do
+            task.spawn(function()
+                task.wait(0.2)
+                processWeaponModel(vm)
+            end)
+        end
+    end)
+end
+
+_G.RefreshArmChams = function()
+    if not _G.Config.ArmChamsEnabled then return end
+    for part, data in pairs(ChamOriginals) do
+        if data.Source == "Arm" and part.Parent then
+            applyArmChamPart(part, true)
+        end
+    end
+    for _, child in ipairs(workspace:GetChildren()) do
+        processArmModel(child)
+    end
+end
+
+_G.RefreshWeaponChams = function()
+    if not _G.Config.WeaponChamsEnabled then return end
+    for part, data in pairs(ChamOriginals) do
+        if data.Source == "Weapon" and part.Parent then
+            applyWeaponChamPart(part, true)
+        end
+    end
+    local viewmodels = workspace:FindFirstChild("viewmodels")
+    if viewmodels then
+        for _, vm in ipairs(viewmodels:GetChildren()) do
+            processWeaponModel(vm)
+        end
+    end
+end
+
+local function maintainArmChams()
+    if not _G.Config.ArmChamsEnabled then return end
+    local style = getChamStyleProps(_G.Config.ArmChamsStyle)
+    local color = _G.Config.ArmChamsColor
+    local stampKey = getChamStampKey("Arm", _G.Config.ArmChamsStyle, color)
+    for part, data in pairs(ChamOriginals) do
+        if data.Source == "Arm" and part.Parent and not isChamUpToDate(part, stampKey, style, color) then
+            applyArmChamPart(part, false)
+        end
+    end
+end
+
+local function maintainWeaponChams()
+    if not _G.Config.WeaponChamsEnabled then return end
+    local style = getChamStyleProps(_G.Config.WeaponChamsStyle)
+    local color = _G.Config.WeaponChamsColor
+    local stampKey = getChamStampKey("Weapon", _G.Config.WeaponChamsStyle, color)
+    for part, data in pairs(ChamOriginals) do
+        if data.Source == "Weapon" and part.Parent and not isChamUpToDate(part, stampKey, style, color) then
+            applyWeaponChamPart(part, false)
+        end
+    end
+end
+
+-- ==========================================
+-- 3.9 FULLBRIGHT + MENU COLOR
+-- ==========================================
+local Lighting = game:GetService("Lighting")
+
+local FULLBRIGHT_CLOCK_TIME = 14
+local FULLBRIGHT_TIME_OF_DAY = "14:00:00"
+local FULLBRIGHT_LOCKED_PROPS = {
+    "Brightness",
+    "ClockTime",
+    "TimeOfDay",
+    "FogEnd",
+    "FogStart",
+    "GlobalShadows",
+    "Ambient",
+    "OutdoorAmbient",
+    "GeographicLatitude",
+}
+
+local fullbrightApplying = false
+
+local function cleanupFullbright()
+    if _G._FullbrightConn then
+        pcall(function() _G._FullbrightConn:Disconnect() end)
+        _G._FullbrightConn = nil
+    end
+    if _G._FullbrightLoopConn then
+        pcall(function() _G._FullbrightLoopConn:Disconnect() end)
+        _G._FullbrightLoopConn = nil
+    end
+    if _G._FullbrightMaintainConn then
+        pcall(function() _G._FullbrightMaintainConn:Disconnect() end)
+        _G._FullbrightMaintainConn = nil
+    end
+    if _G._FullbrightPropConns then
+        for _, conn in ipairs(_G._FullbrightPropConns) do
+            pcall(function() conn:Disconnect() end)
+        end
+        _G._FullbrightPropConns = nil
+    end
+end
+
+if _G._FullbrightCleanup then
+    pcall(_G._FullbrightCleanup)
+end
+_G._FullbrightCleanup = cleanupFullbright
+cleanupFullbright()
+
+local function disableLightingEffects(obj)
+    if obj:IsA("PostEffect") or obj:IsA("BlurEffect") or obj:IsA("ColorCorrectionEffect") then
+        obj.Enabled = false
+    elseif obj:IsA("Atmosphere") then
+        obj.Density = 0
+        obj.Haze = 0
+    end
+end
+
+local function restoreLightingEffects(obj, saved)
+    if obj:IsA("PostEffect") or obj:IsA("BlurEffect") or obj:IsA("ColorCorrectionEffect") then
+        if saved and saved.enabled ~= nil then
+            obj.Enabled = saved.enabled
+        else
+            obj.Enabled = true
+        end
+    elseif obj:IsA("Atmosphere") then
+        if saved then
+            if saved.density ~= nil then obj.Density = saved.density end
+            if saved.haze ~= nil then obj.Haze = saved.haze end
+        else
+            obj.Density = 0.3
+        end
+    end
+end
+
+local function restoreFullbrightLighting()
+    local saved = _G._FullbrightOriginal
+    if not saved then return end
+
+    fullbrightApplying = true
+    Lighting.Brightness = saved.brightness
+    Lighting.ClockTime = saved.clockTime
+    if saved.timeOfDay then
+        pcall(function() Lighting.TimeOfDay = saved.timeOfDay end)
+    end
+    Lighting.FogEnd = saved.fogEnd
+    Lighting.FogStart = saved.fogStart
+    Lighting.GlobalShadows = saved.shadows
+    Lighting.Ambient = saved.ambient
+    Lighting.OutdoorAmbient = saved.outdoorAmbient
+    if saved.geographicLatitude ~= nil then
+        pcall(function() Lighting.GeographicLatitude = saved.geographicLatitude end)
+    end
+    fullbrightApplying = false
+
+    for _, child in ipairs(Lighting:GetChildren()) do
+        restoreLightingEffects(child, saved.effects and saved.effects[child])
+    end
+end
+
+local function applyFullbrightLighting()
+    if fullbrightApplying then return end
+    fullbrightApplying = true
+
+    Lighting.Brightness = 2
+    Lighting.ClockTime = FULLBRIGHT_CLOCK_TIME
+    pcall(function()
+        Lighting.TimeOfDay = FULLBRIGHT_TIME_OF_DAY
+    end)
+    Lighting.FogEnd = 100000
+    Lighting.FogStart = 0
+    Lighting.GlobalShadows = false
+    Lighting.Ambient = Color3.fromRGB(255, 255, 255)
+    Lighting.OutdoorAmbient = Color3.fromRGB(255, 255, 255)
+    pcall(function()
+        Lighting.GeographicLatitude = 0
+    end)
+
+    fullbrightApplying = false
+
+    for _, child in ipairs(Lighting:GetDescendants()) do
+        disableLightingEffects(child)
+    end
+end
+
+local function LoopFB()
+    if not _G.Config.FullbrightEnabled then return end
+    applyFullbrightLighting()
+end
+
+local function bindFullbrightPropertyGuards()
+    _G._FullbrightPropConns = _G._FullbrightPropConns or {}
+
+    for _, propName in ipairs(FULLBRIGHT_LOCKED_PROPS) do
+        local conn = Lighting:GetPropertyChangedSignal(propName):Connect(function()
+            if _G.Config.FullbrightEnabled and not fullbrightApplying then
+                applyFullbrightLighting()
+            end
+        end)
+        table.insert(_G._FullbrightPropConns, conn)
+    end
+end
+
+local function startFullbrightMaintenance()
+    cleanupFullbright()
+    bindFullbrightPropertyGuards()
+
+    _G._FullbrightConn = Lighting.DescendantAdded:Connect(function(child)
+        task.defer(function()
+            if _G.Config.FullbrightEnabled then
+                disableLightingEffects(child)
+            end
+        end)
+    end)
+
+    _G._FullbrightLoopConn = RunService.RenderStepped:Connect(LoopFB)
+end
+
+if not (_G.Config and _G.Config.FullbrightEnabled) then
+    restoreFullbrightLighting()
+end
+
+_G.SetFullbrightEnabled = function(enabled)
+    _G.Config.FullbrightEnabled = enabled == true
+
+    if enabled then
+        if not _G._FullbrightOriginal then
+            _G._FullbrightOriginal = {
+                brightness = Lighting.Brightness,
+                clockTime = Lighting.ClockTime,
+                timeOfDay = Lighting.TimeOfDay,
+                fogEnd = Lighting.FogEnd,
+                fogStart = Lighting.FogStart,
+                shadows = Lighting.GlobalShadows,
+                ambient = Lighting.Ambient,
+                outdoorAmbient = Lighting.OutdoorAmbient,
+                geographicLatitude = Lighting.GeographicLatitude,
+                effects = {},
+            }
+            for _, child in ipairs(Lighting:GetChildren()) do
+                if child:IsA("PostEffect") or child:IsA("BlurEffect") or child:IsA("ColorCorrectionEffect") then
+                    _G._FullbrightOriginal.effects[child] = { enabled = child.Enabled }
+                elseif child:IsA("Atmosphere") then
+                    _G._FullbrightOriginal.effects[child] = { density = child.Density, haze = child.Haze }
+                end
+            end
+        end
+
+        applyFullbrightLighting()
+        startFullbrightMaintenance()
+    else
+        cleanupFullbright()
+        restoreFullbrightLighting()
+        _G._FullbrightOriginal = nil
+    end
+end
+
+_G.ApplyMenuColor = function(color)
+    if typeof(color) ~= "Color3" then return end
+    _G.Config.MenuColor = color
+    if _G.SplixWindow and _G.SplixWindow.settheme then
+        pcall(function() _G.SplixWindow:settheme("accent", color) end)
+    end
+end
+
+local CREATOR_LINKS = {
+    {
+        name = "mmq",
+        role = "Creator & Developer",
+        url = "https://www.youtube.com/@mmq-098",
+        accent = Color3.fromRGB(255, 90, 90),
+    },
+    {
+        name = "SSRP Fan",
+        role = "Creator & Contributor",
+        url = "https://www.youtube.com/@melsteadssrpfan",
+        accent = Color3.fromRGB(255, 196, 46),
+    },
+}
+
+local function openProjectMenuLink(url)
+    local opened = false
+    pcall(function()
+        if syn and syn.open_url then
+            syn.open_url(url)
+            opened = true
+        elseif fluxus and fluxus.open_url then
+            fluxus.open_url(url)
+            opened = true
+        elseif typeof(openurl) == "function" then
+            openurl(url)
+            opened = true
+        else
+            game:GetService("StarterGui"):SetCore("OpenBrowserWindow", url)
+            opened = true
+        end
+    end)
+    if not opened and typeof(setclipboard) == "function" then
+        setclipboard(url)
+        if _G.ShowNotify then
+            _G.ShowNotify("YouTube link copied to clipboard", "info")
+        end
+    elseif opened and _G.ShowNotify then
+        _G.ShowNotify("Opening YouTube channel...", "info")
+    end
+end
+
+local function buildCreatorsSection(section, accentColor)
+    local content = section.content
+    local font = Enum.Font.RobotoMono
+    local textSize = 13
+    accentColor = accentColor or Color3.fromRGB(225, 58, 81)
+
+    local intro = Instance.new("TextLabel")
+    intro.BackgroundTransparency = 1
+    intro.Size = UDim2.new(1, 0, 0, 34)
+    intro.Font = font
+    intro.TextSize = textSize
+    intro.TextColor3 = Color3.fromRGB(165, 165, 175)
+    intro.TextXAlignment = Enum.TextXAlignment.Left
+    intro.TextYAlignment = Enum.TextYAlignment.Top
+    intro.TextWrapped = true
+    intro.Text = "Built by the creators below. Tap a card to open their YouTube channel."
+    intro.Parent = content
+
+    for index, creator in ipairs(CREATOR_LINKS) do
+        local card = Instance.new("Frame")
+        card.Name = "CreatorCard" .. index
+        card.Active = true
+        card.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
+        card.BorderSizePixel = 0
+        card.Size = UDim2.new(1, 0, 0, 62)
+        card.Parent = content
+
+        local cardCorner = Instance.new("UICorner")
+        cardCorner.CornerRadius = UDim.new(0, 7)
+        cardCorner.Parent = card
+
+        local cardStroke = Instance.new("UIStroke")
+        cardStroke.Color = Color3.fromRGB(52, 52, 62)
+        cardStroke.Thickness = 1
+        cardStroke.Transparency = 0.15
+        cardStroke.Parent = card
+
+        local accentBar = Instance.new("Frame")
+        accentBar.BackgroundColor3 = creator.accent
+        accentBar.BorderSizePixel = 0
+        accentBar.Size = UDim2.new(0, 3, 1, -10)
+        accentBar.Position = UDim2.new(0, 6, 0, 5)
+        accentBar.Parent = card
+
+        local accentCorner = Instance.new("UICorner")
+        accentCorner.CornerRadius = UDim.new(1, 0)
+        accentCorner.Parent = accentBar
+
+        local badge = Instance.new("TextLabel")
+        badge.BackgroundColor3 = Color3.fromRGB(28, 28, 34)
+        badge.BorderSizePixel = 0
+        badge.Size = UDim2.new(0, 22, 0, 22)
+        badge.Position = UDim2.new(0, 14, 0, 8)
+        badge.Font = font
+        badge.Text = tostring(index)
+        badge.TextColor3 = creator.accent
+        badge.TextSize = textSize
+        badge.Parent = card
+
+        local badgeCorner = Instance.new("UICorner")
+        badgeCorner.CornerRadius = UDim.new(1, 0)
+        badgeCorner.Parent = badge
+
+        local nameLabel = Instance.new("TextLabel")
+        nameLabel.BackgroundTransparency = 1
+        nameLabel.Size = UDim2.new(1, -118, 0, 18)
+        nameLabel.Position = UDim2.new(0, 42, 0, 8)
+        nameLabel.Font = font
+        nameLabel.Text = creator.name
+        nameLabel.TextColor3 = Color3.fromRGB(245, 245, 250)
+        nameLabel.TextSize = textSize + 1
+        nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+        nameLabel.Parent = card
+
+        local roleLabel = Instance.new("TextLabel")
+        roleLabel.BackgroundTransparency = 1
+        roleLabel.Size = UDim2.new(1, -118, 0, 16)
+        roleLabel.Position = UDim2.new(0, 42, 0, 28)
+        roleLabel.Font = font
+        roleLabel.Text = creator.role
+        roleLabel.TextColor3 = Color3.fromRGB(145, 145, 155)
+        roleLabel.TextSize = textSize - 1
+        roleLabel.TextXAlignment = Enum.TextXAlignment.Left
+        roleLabel.Parent = card
+
+        local linkBtn = Instance.new("TextButton")
+        linkBtn.AutoButtonColor = false
+        linkBtn.BackgroundColor3 = Color3.fromRGB(204, 32, 45)
+        linkBtn.BorderSizePixel = 0
+        linkBtn.Size = UDim2.new(0, 92, 0, 24)
+        linkBtn.Position = UDim2.new(1, -98, 0.5, -12)
+        linkBtn.Font = font
+        linkBtn.Text = "YouTube"
+        linkBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        linkBtn.TextSize = textSize - 1
+        linkBtn.Parent = card
+
+        local linkCorner = Instance.new("UICorner")
+        linkCorner.CornerRadius = UDim.new(0, 5)
+        linkCorner.Parent = linkBtn
+
+        local linkStroke = Instance.new("UIStroke")
+        linkStroke.Color = Color3.fromRGB(255, 255, 255)
+        linkStroke.Transparency = 0.75
+        linkStroke.Thickness = 1
+        linkStroke.Parent = linkBtn
+
+        linkBtn.MouseEnter:Connect(function()
+            linkBtn.BackgroundColor3 = Color3.fromRGB(230, 45, 58)
+        end)
+        linkBtn.MouseLeave:Connect(function()
+            linkBtn.BackgroundColor3 = Color3.fromRGB(204, 32, 45)
+        end)
+        linkBtn.MouseButton1Click:Connect(function()
+            openProjectMenuLink(creator.url)
+        end)
+
+        card.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                openProjectMenuLink(creator.url)
+            end
+        end)
+    end
+
+    local footer = Instance.new("TextLabel")
+    footer.BackgroundTransparency = 1
+    footer.Size = UDim2.new(1, 0, 0, 18)
+    footer.Font = font
+    footer.Text = "Project Menu • " .. os.date("%Y")
+    footer.TextColor3 = accentColor
+    footer.TextSize = textSize - 1
+    footer.TextXAlignment = Enum.TextXAlignment.Center
+    footer.Parent = content
+end
+
+-- ==========================================
+-- 4. ИНТЕРФЕЙС ПО НОВОЙ БИБЛИОТЕКЕ SPLIX
+-- ==========================================
+task.spawn(function()
+    local success, err = pcall(function()
+        closeExistingSplixMenu()
+
+        local menuColor = normalizeConfigColor(_G.Config.MenuColor, Color3.fromRGB(225, 58, 81))
+        _G.Config.MenuColor = menuColor
+        local library = loadstring(game:HttpGet("https://raw.githubusercontent.com/bloodball/-back-ups-for-libs/main/Splix"))()
+        local window = library:new({textsize = 13.5, font = Enum.Font.RobotoMono, name = "PROJECT MENU", color = menuColor})
+
+        local combatPage = window:page({name = "Combat"})
+        local visualsPage = window:page({name = "Visuals"})
+        local miscPage = window:page({name = "Misc"})
+        local configPage = window:page({name = "Config"})
+
+        -- Секции на странице Combat
+        local weaponSec = combatPage:section({name = "Weapon Mods", side = "left", size = 140})
+        local viewmodelSec = combatPage:section({name = "Viewmodel", side = "left", size = 210})
+        local aimSec = combatPage:section({name = "Silent Aim", side = "right", size = 245})
+        local tracerSec = combatPage:section({name = "Bullet Tracers", side = "right", size = 165})
+        
+        -- Секции на странице Visuals
+        local espMainSec = visualsPage:section({name = "Player ESP", side = "left", size = 55})
+        local espVisSec = visualsPage:section({name = "ESP Visibility", side = "left", size = 265})
+        local itemEspSec = visualsPage:section({name = "Item ESP", side = "left", size = 225})
+        local espStyleSec = visualsPage:section({name = "ESP Style", side = "right", size = 275})
+        local vmChamsSec = visualsPage:section({name = "Viewmodel Chams", side = "right", size = 175})
+
+        local safetySec = miscPage:section({name = "Safety", side = "left", size = 55})
+        local systemSec = miscPage:section({name = "System", side = "left", size = 85})
+        local staminaSec = miscPage:section({name = "Movement", side = "left", size = 55})
+        local worldSec = miscPage:section({name = "World", side = "right", size = 55})
+        local appearanceSec = miscPage:section({name = "Appearance", side = "right", size = 120})
+
+        local configSec = configPage:section({name = "Configs", side = "left", size = 300})
+        local feedbackSec = configPage:section({name = "Feedback", side = "right", size = 120})
+        local creatorsSec = configPage:section({name = "Creators", side = "right", size = 210})
+
+        _G.SplixWindow = window
+
+        -- Конфигурация Weapon Mods
+        _G.UI_tAutoReload = weaponSec:toggle({name = "Auto Reload", def = false, callback = function(v)
+            _G.Config.AutoReload = v
+            if v and _G.ApplyAutoReload then
+                _G.ApplyAutoReload()
+            end
+        end})
+        _G.UI_sRecoil = weaponSec:slider({name = "Recoil Scale", def = _G.Config.RecoilScale or 100, max = 100, min = 0, rounding = true, ticking = false, measuring = "%", callback = function(v) 
+            _G.Config.RecoilScale = v 
+        end})
+        _G.UI_tNoSpread = weaponSec:toggle({name = "No Spread", def = false, callback = function(v)
+            _G.Config.NoSpread = v
+        end})
+
+        _G.UI_tViewmodelEnabled = viewmodelSec:toggle({name = "Enable Offset", def = false, callback = function(v)
+            _G.Config.ViewmodelEnabled = v
+            if _G.ApplyViewmodelOffset then _G.ApplyViewmodelOffset() end
+        end})
+        _G.UI_tViewmodelLock = viewmodelSec:toggle({name = "Lock Position", def = true, callback = function(v)
+            _G.Config.ViewmodelLock = v
+        end})
+        _G.UI_sViewmodelX = viewmodelSec:slider({name = "Left / Right", def = roundConfigNumber((_G.Config.ViewmodelOffsetX or 0) * 10), min = -30, max = 30, rounding = true, ticking = false, callback = function(v)
+            _G.Config.ViewmodelOffsetX = v / 10
+            if _G.ApplyViewmodelOffset then _G.ApplyViewmodelOffset() end
+        end})
+        _G.UI_sViewmodelY = viewmodelSec:slider({name = "Up / Down", def = roundConfigNumber((_G.Config.ViewmodelOffsetY or 0) * 10), min = -30, max = 30, rounding = true, ticking = false, callback = function(v)
+            _G.Config.ViewmodelOffsetY = v / 10
+            if _G.ApplyViewmodelOffset then _G.ApplyViewmodelOffset() end
+        end})
+        _G.UI_sViewmodelZ = viewmodelSec:slider({name = "Back / Forward", def = roundConfigNumber((_G.Config.ViewmodelOffsetZ or 0) * 10), min = -30, max = 30, rounding = true, ticking = false, callback = function(v)
+            _G.Config.ViewmodelOffsetZ = v / 10
+            if _G.ApplyViewmodelOffset then _G.ApplyViewmodelOffset() end
+        end})
+
+        -- Конфигурация Silent Aim
+        _G.UI_tSilentAim = aimSec:toggle({name = "Enable Silent Aim", def = false, callback = function(v) 
+            _G.Config.SilentAim = v 
+        end})
+        _G.UI_tSilentAimTeamCheck = aimSec:toggle({name = "Team Check", def = _G.Config.SilentAimTeamCheck ~= false, callback = function(v)
+            _G.Config.SilentAimTeamCheck = v
+        end})
+        _G.UI_tSilentAimWallCheck = aimSec:toggle({name = "Wall Check", def = _G.Config.SilentAimWallCheck ~= false, callback = function(v)
+            _G.Config.SilentAimWallCheck = v
+        end})
+        _G.UI_tShowFOV = aimSec:toggle({name = "Show FOV", def = false, callback = function(v) 
+            _G.Config.ShowFOV = v 
+        end})
+        _G.UI_sFovRadius = aimSec:slider({name = "FOV Radius", def = _G.Config.FOVSize or 100, max = 600, min = 10, rounding = true, ticking = false, measuring = "px", callback = function(v) 
+            _G.Config.FOVSize = v 
+        end})
+        _G.UI_mHitParts = aimSec:multibox({name = "Hit-Parts", def = _G.Config.TargetParts or {"Head", "Torso"}, max = 6, options = {"Head", "Torso", "Left Arm", "Right Arm", "Left Leg", "Right Leg"}, callback = function(v)
+            _G.Config.TargetParts = v
+        end})
+        _G.UI_tAmmoCounter = aimSec:toggle({name = "Ammo Counter", def = false, callback = function(v)
+            _G.Config.AmmoCounterEnabled = v
+        end})
+        _G.UI_tAutoShoot = aimSec:toggle({name = "Auto Shoot", def = false, callback = function(v)
+            _G.Config.AutoShootEnabled = v
+        end})
+
+        _G.UI_tTracers = tracerSec:toggle({name = "Enable Tracers", def = false, callback = function(v)
+            _G.Config.TracersEnabled = v
+        end})
+        _G.UI_dTracerStyle = tracerSec:dropdown({name = "Tracer effect", def = _G.Config.TracerStyle or "Neon", max = 5, options = {"Neon", "Glow", "Beam", "Lightning", "Laser"}, callback = function(v)
+            _G.Config.TracerStyle = v
+        end})
+        _G.UI_cTracerColor = tracerSec:colorpicker({name = "Tracer color", def = _G.Config.TracerColor, callback = function(c)
+            _G.Config.TracerColor = c
+        end})
+        _G.UI_sTracerDuration = tracerSec:slider({name = "Duration", def = roundConfigNumber((_G.Config.TracerDuration or 0.8) * 10), min = 2, max = 50, rounding = true, ticking = false, measuring = "s", callback = function(v)
+            _G.Config.TracerDuration = v / 10
+        end})
+        _G.UI_sTracerWidth = tracerSec:slider({name = "Width", def = roundConfigNumber((_G.Config.TracerWidth or 0.05) * 100), min = 2, max = 20, rounding = true, ticking = false, measuring = "%", callback = function(v)
+            _G.Config.TracerWidth = v / 100
+        end})
+
+        -- Player ESP (main)
+        _G.UI_tEnableESP = espMainSec:toggle({name = "Enable ESP", def = false, callback = function(v)
+            _G.SetPlayerESPEnabled(v)
+        end})
+
+        -- ESP visibility (teleport.lua VISIBILITY)
+        _G.UI_tChams = espVisSec:toggle({name = "Chams (team color)", def = true, callback = function(v)
+            _G.Config.ESPShowChams = v
+        end})
+        _G.UI_tBox = espVisSec:toggle({name = "Box (2D outline)", def = true, callback = function(v)
+            _G.Config.ESPShowBox = v
+        end})
+        _G.UI_tNames = espVisSec:toggle({name = "Player names", def = true, callback = function(v)
+            _G.Config.ESPShowName = v
+        end})
+        _G.UI_tHPPercent = espVisSec:toggle({name = "HP % (on bar)", def = true, callback = function(v)
+            _G.Config.ESPShowHealth = v
+        end})
+        _G.UI_tSideHPBar = espVisSec:toggle({name = "Side HP bar", def = true, callback = function(v)
+            _G.Config.ESPShowHealthBar = v
+        end})
+        _G.UI_tDistance = espVisSec:toggle({name = "Distance", def = true, callback = function(v)
+            _G.Config.ESPShowDistance = v
+        end})
+        _G.UI_tRoleLabel = espVisSec:toggle({name = "Role / Team label", def = true, callback = function(v)
+            _G.Config.ESPShowRole = v
+        end})
+        _G.UI_tTeamColor = espVisSec:toggle({name = "Team color (auto)", def = true, callback = function(v)
+            _G.Config.ESPShowTeamColor = v
+            refreshAllESP()
+        end})
+        _G.UI_tTeammates = espVisSec:toggle({name = "Teammates", def = _G.Config.ESPShowTeammates ~= false, callback = function(v)
+            _G.Config.ESPShowTeammates = v
+        end})
+        _G.UI_tModHighlight = espVisSec:toggle({name = "Moderator highlight", def = false, callback = function(v)
+            _G.Config.ModESPEnabled = v
+            updateAllModeratorHighlights()
+        end})
+
+        -- ESP style (RANGE, BOX STYLE, TEXT)
+        _G.UI_sEspMaxDist = espStyleSec:slider({name = "Max distance", def = _G.Config.ESPMaxDistance or 500, min = 50, max = 1000, rounding = true, ticking = false, measuring = "m", callback = function(v)
+            _G.Config.ESPMaxDistance = v
+        end})
+        _G.UI_sEspBoxThick = espStyleSec:slider({name = "Box thickness", def = roundConfigNumber((_G.Config.ESPBoxThickness or 1.5) / 0.5), min = 1, max = 8, rounding = true, ticking = false, callback = function(v)
+            _G.Config.ESPBoxThickness = v * 0.5
+        end})
+        _G.UI_sEspNameSize = espStyleSec:slider({name = "Name size", def = _G.Config.ESPNameSize or 12, min = 8, max = 20, rounding = true, ticking = false, measuring = "px", callback = function(v)
+            _G.Config.ESPNameSize = v
+        end})
+
+        local boxCol = _G.Config.ESPBoxColor or Color3.fromRGB(255, 255, 255)
+        _G.UI_sBoxColorR = espStyleSec:slider({name = "Box color R", min = 0, max = 255, def = math.floor(boxCol.R * 255), callback = function(v)
+            local g = math.floor(_G.Config.ESPBoxColor.G * 255)
+            local b = math.floor(_G.Config.ESPBoxColor.B * 255)
+            _G.Config.ESPBoxColor = Color3.fromRGB(v, g, b)
+            refreshAllESP()
+        end})
+        _G.UI_sBoxColorG = espStyleSec:slider({name = "Box color G", min = 0, max = 255, def = math.floor(boxCol.G * 255), callback = function(v)
+            local r = math.floor(_G.Config.ESPBoxColor.R * 255)
+            local b = math.floor(_G.Config.ESPBoxColor.B * 255)
+            _G.Config.ESPBoxColor = Color3.fromRGB(r, v, b)
+            refreshAllESP()
+        end})
+        _G.UI_sBoxColorB = espStyleSec:slider({name = "Box color B", min = 0, max = 255, def = math.floor(boxCol.B * 255), callback = function(v)
+            local r = math.floor(_G.Config.ESPBoxColor.R * 255)
+            local g = math.floor(_G.Config.ESPBoxColor.G * 255)
+            _G.Config.ESPBoxColor = Color3.fromRGB(r, g, v)
+            refreshAllESP()
+        end})
+
+        _G.UI_tItemEsp = itemEspSec:toggle({name = "Enable Item ESP", def = false, callback = function(v)
+            _G.SetItemESPEnabled(v)
+        end})
+        _G.UI_sItemMaxDist = itemEspSec:slider({name = "Item max distance", def = _G.Config.ItemESPMaxDistance or 400, min = 50, max = 1000, rounding = true, ticking = false, measuring = "m", callback = function(v)
+            _G.Config.ItemESPMaxDistance = v
+        end})
+        _G.UI_sItemIconSize = itemEspSec:slider({name = "Icon size", def = _G.Config.ItemESPIconSize or 32, min = 16, max = 64, rounding = true, ticking = false, measuring = "px", callback = function(v)
+            _G.Config.ItemESPIconSize = v
+        end})
+        _G.UI_mItemExcludeCats = itemEspSec:multibox({name = "Exclude categories", def = _G.Config.ItemESPExcludedCategories or {}, max = 6, options = ItemCategoryList, callback = function(v)
+            _G.Config.ItemESPExcludedCategories = v
+            if _G.RefreshItemESPExclusions then _G.RefreshItemESPExclusions() end
+        end})
+        _G.UI_mItemExcludeItems = itemEspSec:multibox({name = "Exclude items", def = _G.Config.ItemESPExcludedItems or {}, max = 99, options = ItemNameList, callback = function(v)
+            _G.Config.ItemESPExcludedItems = v
+            if _G.RefreshItemESPExclusions then _G.RefreshItemESPExclusions() end
+        end})
+
+        _G.UI_tArmChams = vmChamsSec:toggle({name = "Arm Chams", def = false, callback = function(v)
+            if _G.SetArmChamsEnabled then _G.SetArmChamsEnabled(v) end
+        end})
+        _G.UI_dArmChamsStyle = vmChamsSec:dropdown({name = "Arm material", def = _G.Config.ArmChamsStyle or "ForceField", max = 4, options = CHAM_STYLE_LIST, callback = function(v)
+            _G.Config.ArmChamsStyle = v
+            if _G.RefreshArmChams then _G.RefreshArmChams() end
+        end})
+        _G.UI_cArmChamsColor = vmChamsSec:colorpicker({name = "Arm color", def = _G.Config.ArmChamsColor, callback = function(c)
+            _G.Config.ArmChamsColor = c
+            if _G.RefreshArmChams then _G.RefreshArmChams() end
+        end})
+
+        _G.UI_tWeaponChams = vmChamsSec:toggle({name = "Weapon Chams", def = false, callback = function(v)
+            if _G.SetWeaponChamsEnabled then _G.SetWeaponChamsEnabled(v) end
+        end})
+        _G.UI_dWeaponChamsStyle = vmChamsSec:dropdown({name = "Weapon material", def = _G.Config.WeaponChamsStyle or "ForceField", max = 4, options = CHAM_STYLE_LIST, callback = function(v)
+            _G.Config.WeaponChamsStyle = v
+            if _G.RefreshWeaponChams then _G.RefreshWeaponChams() end
+        end})
+        _G.UI_cWeaponChamsColor = vmChamsSec:colorpicker({name = "Weapon color", def = _G.Config.WeaponChamsColor, callback = function(c)
+            _G.Config.WeaponChamsColor = c
+            if _G.RefreshWeaponChams then _G.RefreshWeaponChams() end
+        end})
+
+        _G.UI_tBanPanic = safetySec:toggle({name = "Ban Panic (auto exit)", def = true, callback = function(v)
+            if _G.SetBanPanicEnabled then _G.SetBanPanicEnabled(v) end
+        end})
+
+        systemSec:button({name = "Reload ESP", callback = function()
+            pcall(_G.ReloadESP)
+        end})
+        systemSec:button({name = "Close Script", callback = function()
+            pcall(_G.UnloadScript)
+        end})
+
+        _G.UI_tInfiniteStamina = staminaSec:toggle({name = "Infinite Stamina", def = false, callback = function(v)
+            if _G.SetInfiniteStamina then _G.SetInfiniteStamina(v) end
+        end})
+
+        _G.UI_tFullbright = worldSec:toggle({name = "Fullbright", def = _G.Config.FullbrightEnabled == true, callback = function(v)
+            if _G.SetFullbrightEnabled then _G.SetFullbrightEnabled(v) end
+        end})
+
+        _G.UI_dMenuPalette = appearanceSec:dropdown({name = "Menu palette", def = getMenuColorPresetName(menuColor) or "Crimson", max = 8, options = MENU_COLOR_NAMES, callback = function(v)
+            local preset = MENU_COLOR_PALETTE[v]
+            if preset and _G.ApplyMenuColor then
+                _G.ApplyMenuColor(preset)
+            end
+        end})
+        _G.UI_cMenuColor = appearanceSec:colorpicker({name = "Menu color", def = menuColor, callback = function(c)
+            if _G.ApplyMenuColor then
+                _G.ApplyMenuColor(c)
+            end
+        end})
+
+        if _G.Config.FullbrightEnabled and _G.SetFullbrightEnabled then
+            _G.SetFullbrightEnabled(true)
+        end
+        if _G.ApplyMenuColor then
+            _G.ApplyMenuColor(menuColor)
+        end
+
+        local savedConfigs = _G.ListSavedConfigs()
+        if #savedConfigs == 0 then
+            table.insert(savedConfigs, "(no configs yet)")
+        end
+        local defaultConfig = savedConfigs[1]
+        if _G.Config.ConfigFileName and table.find(savedConfigs, _G.Config.ConfigFileName) then
+            defaultConfig = _G.Config.ConfigFileName
+        end
+
+        _G.ConfigDropdown = configSec:dropdown({
+            name = "Saved configs",
+            def = defaultConfig,
+            max = 12,
+            options = savedConfigs,
+            callback = function(v)
+                if v ~= "(no configs yet)" then
+                    _G.Config.ConfigFileName = v
+                end
+            end
+        })
+
+        configSec:button({name = "Load Config", callback = function()
+            local name = getActiveConfigName()
+            if name == "" or not table.find(_G.ListSavedConfigs(), name) then
+                _G.ShowNotify("Select a config from the list first", "error")
+                return
+            end
+            pcall(_G.LoadConfig, name)
+        end})
+        configSec:button({name = "Refresh List", callback = function()
+            pcall(_G.RefreshConfigList)
+            _G.ShowNotify("Config list refreshed", "info")
+        end})
+        configSec:button({name = "Delete Config", callback = function()
+            pcall(_G.DeleteConfig, getActiveConfigName())
+        end})
+
+        configSec:textbox({name = "New config name", def = "myconfig", callback = function(v)
+            _G.ConfigNewName = (v ~= "" and v) or "myconfig"
+        end})
+        configSec:button({name = "Create Config", callback = function()
+            local name = _G.ConfigNewName or "myconfig"
+            if _G.CreateConfig and _G.CreateConfig(name) then
+                _G.Config.ConfigFileName = name
+                if _G.ConfigDropdown and _G.ConfigDropdown.set then
+                    pcall(function() _G.ConfigDropdown:set(name) end)
+                end
+            end
+        end})
+        configSec:button({name = "Update Config", callback = function()
+            pcall(_G.UpdateConfig, getActiveConfigName())
+        end})
+
+        _G.FeedbackText = ""
+        feedbackSec:textbox({name = "Your message", def = "", callback = function(v)
+            _G.FeedbackText = v or ""
+        end})
+        feedbackSec:button({name = "Send Feedback", callback = function()
+            if _G.SendFeedback then
+                pcall(_G.SendFeedback, _G.FeedbackText or "")
+            end
+        end})
+
+        buildCreatorsSection(creatorsSec, menuColor)
+
+    end)
+    
+    if not success then
+        warn("Не удалось загрузить меню: " .. tostring(err))
+    end
+end)
+
+-- ==========================================
+-- 5.45 BULLET TRACERS (BulletHandler_client hook)
+-- ==========================================
+local function wrapBulletClosure(fn)
+    if typeof(newcclosure) == "function" then
+        return newcclosure(fn)
+    end
+    return fn
+end
+
+local function getTracerParent()
+    return workspace:FindFirstChildOfClass("Terrain") or workspace
+end
+
+local function buildTracerRaycastParams()
+    local raycastParams = RaycastParams.new()
+    raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+    local filter = {}
+    local char = LocalPlayer.Character or getPlayerCharacter(LocalPlayer)
+    if char then
+        table.insert(filter, char)
+    end
+    if Camera then
+        table.insert(filter, Camera)
+    end
+    raycastParams.FilterDescendantsInstances = filter
+    return raycastParams
+end
+
+local function resolveTracerEndPos(origin, direction)
+    local maxDist = _G.Config.TracerMaxDistance or 500
+    direction = direction.Unit
+    local ray = workspace:Raycast(origin, direction * maxDist, buildTracerRaycastParams())
+    return ray and ray.Position or (origin + direction * maxDist)
+end
+
+local Debris = game:GetService("Debris")
+
+local function createNeonTracerPart(origin, endPos, color, thickness, lifetime, withGlow, shrinkWidth)
+    local distance = (origin - endPos).Magnitude
+    if distance < 0.05 then return end
+
+    lifetime = math.clamp(tonumber(lifetime) or 0.8, 0.2, 5)
+
+    local tracer = Instance.new("Part")
+    tracer.Name = "EzekielTracer"
+    tracer.Anchored = true
+    tracer.CanCollide = false
+    tracer.CanQuery = false
+    tracer.CanTouch = false
+    tracer.CastShadow = false
+    tracer.Material = Enum.Material.Neon
+    tracer.Color = color
+    tracer.Transparency = 0
+    tracer.Size = Vector3.new(thickness, thickness, distance)
+    tracer.CFrame = CFrame.lookAt(origin:Lerp(endPos, 0.5), endPos)
+    tracer.Parent = getTracerParent()
+
+    if withGlow then
+        local light = Instance.new("PointLight")
+        light.Color = color
+        light.Brightness = 2.5
+        light.Range = math.clamp(distance * 0.4, 6, 20)
+        light.Parent = tracer
+    end
+
+    local endThickness = shrinkWidth or 0.001
+    TweenService:Create(tracer, TweenInfo.new(lifetime, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+        Transparency = 1,
+        Size = Vector3.new(endThickness, endThickness, distance * 0.05),
+    }):Play()
+
+    Debris:AddItem(tracer, lifetime + 0.05)
+end
+
+local function createBeamTracer(origin, endPos, color, thickness, lifetime)
+    lifetime = math.clamp(tonumber(lifetime) or 0.8, 0.2, 5)
+
+    local host = Instance.new("Part")
+    host.Name = "EzekielTracerBeam"
+    host.Anchored = true
+    host.CanCollide = false
+    host.CanQuery = false
+    host.CanTouch = false
+    host.Transparency = 1
+    host.Size = Vector3.new(0.05, 0.05, 0.05)
+    host.CFrame = CFrame.new(origin)
+    host.Parent = getTracerParent()
+
+    local att0 = Instance.new("Attachment")
+    local att1 = Instance.new("Attachment")
+    att0.Parent = host
+    att1.Parent = host
+    att0.WorldPosition = origin
+    att1.WorldPosition = endPos
+
+    local startWidth0 = thickness * 2
+    local startWidth1 = thickness * 0.5
+
+    local beam = Instance.new("Beam")
+    beam.Attachment0 = att0
+    beam.Attachment1 = att1
+    beam.Color = ColorSequence.new(color)
+    beam.Width0 = startWidth0
+    beam.Width1 = startWidth1
+    beam.FaceCamera = true
+    beam.LightEmission = 1
+    beam.LightInfluence = 0
+    beam.Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 0.05),
+        NumberSequenceKeypoint.new(1, 0.35),
+    })
+    beam.Parent = host
+
+    local started = tick()
+    local fadeConn
+    fadeConn = RunService.RenderStepped:Connect(function()
+        if not host.Parent then
+            fadeConn:Disconnect()
+            return
+        end
+        local alpha = math.clamp((tick() - started) / lifetime, 0, 1)
+        local fade = 1 - alpha
+        beam.Width0 = startWidth0 * fade
+        beam.Width1 = startWidth1 * fade
+        beam.Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 0.05 + alpha * 0.95),
+            NumberSequenceKeypoint.new(1, 0.35 + alpha * 0.65),
+        })
+        if alpha >= 1 then
+            fadeConn:Disconnect()
+            host:Destroy()
+        end
+    end)
+
+    Debris:AddItem(host, lifetime + 0.1)
+end
+
+_G.DrawBulletTracer = function(origin, direction)
+    if not _G.Config.TracersEnabled then return end
+    if typeof(origin) ~= "Vector3" or typeof(direction) ~= "Vector3" then return end
+    if direction.Magnitude < 0.001 then return end
+
+    direction = direction.Unit
+    local endPos = resolveTracerEndPos(origin, direction)
+    local color = _G.Config.TracerColor or Color3.fromRGB(255, 255, 0)
+    local style = _G.Config.TracerStyle or "Neon"
+    local lifetime = math.clamp(tonumber(_G.Config.TracerDuration) or 0.8, 0.2, 5)
+    local thickness = math.clamp(_G.Config.TracerWidth or 0.05, 0.02, 0.2)
+
+    if style == "Glow" then
+        createNeonTracerPart(origin, endPos, color, thickness * 1.2, lifetime, true, 0)
+    elseif style == "Beam" then
+        createBeamTracer(origin, endPos, color, thickness, lifetime)
+    elseif style == "Laser" then
+        createNeonTracerPart(origin, endPos, color, thickness * 0.45, lifetime * 0.55, false, 0)
+    elseif style == "Lightning" then
+        local delta = endPos - origin
+        local dist = delta.Magnitude
+        local unit = delta.Unit
+        local right = unit:Cross(Vector3.new(0, 1, 0))
+        if right.Magnitude < 0.01 then
+            right = unit:Cross(Vector3.new(1, 0, 0))
+        end
+        right = right.Unit
+        local up = unit:Cross(right).Unit
+        local points = {origin}
+        for i = 1, 5 do
+            local t = i / 6
+            local base = origin + unit * (dist * t)
+            local jitter = thickness * 5
+            table.insert(points, base + right * ((math.random() - 0.5) * jitter) + up * ((math.random() - 0.5) * jitter))
+        end
+        table.insert(points, endPos)
+        for i = 1, #points - 1 do
+            createNeonTracerPart(points[i], points[i + 1], color, thickness * 0.7, lifetime * 0.85, false, 0)
+        end
+    else
+        createNeonTracerPart(origin, endPos, color, thickness, lifetime, false, 0)
+    end
+end
+
+_G.ClearBulletTracers = function()
+    local parent = getTracerParent()
+    for _, child in ipairs(parent:GetChildren()) do
+        if child.Name == "EzekielTracer" or child.Name == "EzekielTracerBeam" then
+            child:Destroy()
+        end
+    end
+end
+
+local function installBulletHandlerHooks()
+    if not _G.BulletHandler or _G.AimHooked then return end
+
+    local old_Fire = _G.BulletHandler.Fire
+    local old_FireShotgun = _G.BulletHandler.FireShotgun
+
+    _G.BulletHandler.Fire = wrapBulletClosure(function(pos, direction, gun, spread)
+        if _G.Config.NoSpread then
+            spread = Vector3.new(0, 0, 0)
+        end
+
+        if _G.Config.SilentAim and typeof(pos) == "Vector3" and typeof(direction) == "Vector3" then
+            local target, aimPartName = _G.GetBestTarget()
+            if target then
+                local newDirection = getSilentAimDirection(pos, gun, target, aimPartName)
+                if newDirection then
+                    direction = newDirection
+                end
+            end
+        end
+
+        if _G.Config.TracersEnabled and typeof(pos) == "Vector3" and typeof(direction) == "Vector3" then
+            task.spawn(_G.DrawBulletTracer, pos, direction)
+        end
+
+        return old_Fire(pos, direction, gun, spread)
+    end)
+
+    _G.BulletHandler.FireShotgun = wrapBulletClosure(function(pos, direction, gun, spread, pellets)
+        if _G.Config.NoSpread then
+            spread = Vector3.new(0, 0, 0)
+        end
+
+        if _G.Config.SilentAim and typeof(pos) == "Vector3" and typeof(direction) == "Vector3" then
+            local target, aimPartName = _G.GetBestTarget()
+            if target then
+                local newDirection = getSilentAimDirection(pos, gun, target, aimPartName)
+                if newDirection then
+                    direction = newDirection
+                end
+            end
+        end
+
+        if _G.Config.TracersEnabled and typeof(pos) == "Vector3" and typeof(direction) == "Vector3" then
+            task.spawn(function()
+                local spreadVec = typeof(spread) == "Vector3" and spread or Vector3.new(0, 0, 0)
+                local count = typeof(pellets) == "number" and pellets or 5
+                for _ = 1, count do
+                    local spreadDir = (direction + Vector3.new(
+                        math.random(-spreadVec.X, spreadVec.X) / 10,
+                        math.random(-spreadVec.Y, spreadVec.Y) / 10,
+                        math.random(-spreadVec.X, spreadVec.X) / 10
+                    )).Unit
+                    _G.DrawBulletTracer(pos, spreadDir)
+                end
+            end)
+        end
+
+        return old_FireShotgun(pos, direction, gun, spread, pellets)
+    end)
+
+    _G.AimHooked = true
+end
+
+task.spawn(function()
+    pcall(function()
+        local repMods = ReplicatedStorage:WaitForChild("Modules", 20)
+        if repMods and repMods:FindFirstChild("BulletHandler_client") then
+            if not _G.BulletHandler then
+                _G.BulletHandler = require(repMods.BulletHandler_client)
+            end
+            installBulletHandlerHooks()
+        end
+    end)
+end)
+
+-- ==========================================
+-- 5. БЕЗОПАСНАЯ ЗАГРУЗКА ИГРОВЫХ МОДУЛЕЙ
+-- ==========================================
+task.spawn(function()
+    while task.wait(1) do
+        pcall(function()
+            local PScripts = LocalPlayer:FindFirstChild("PlayerScripts")
+            local CMain = PScripts and PScripts:FindFirstChild("ClientMain")
+            local Mods = CMain and CMain:FindFirstChild("Modules")
+            local RepMods = ReplicatedStorage:FindFirstChild("Modules")
+            
+            if Mods then
+                if not _G.GunsModule and Mods:FindFirstChild("Guns") then _G.GunsModule = require(Mods.Guns) end
+                if not _G.SharedSettings and Mods:FindFirstChild("SharedSettings") then _G.SharedSettings = require(Mods.SharedSettings) end
+            end
+            
+            if RepMods then
+                if not _G.TeamsManager and RepMods:FindFirstChild("TeamsManager") then _G.TeamsManager = require(RepMods.TeamsManager) end
+                if not _G.Network and RepMods:FindFirstChild("Network") then _G.Network = require(RepMods.Network) end
+                if not _G.BulletHandler and RepMods:FindFirstChild("BulletHandler_client") then _G.BulletHandler = require(RepMods.BulletHandler_client) end
+            end
+            
+            -- Прямой хук на отдачу с защитой от NaN (черного экрана)
+            if _G.GunsModule and not _G.RecoilHooked then
+                local old_getRecoil = _G.GunsModule.getRecoilMultiplier
+                _G.GunsModule.getRecoilMultiplier = function(...)
+                    local m, o = old_getRecoil(...)
+                    
+                    -- Проверяем тип возвращаемых значений, если не число — заменяем на дефолт
+                    if typeof(m) ~= "number" then m = 1 end
+                    if typeof(o) ~= "number" then o = 0 end
+                    
+                    local factor = (_G.Config.RecoilScale or 100) / 100
+                    return m * factor, o * factor
+                end
+                _G.RecoilHooked = true
+            end
+
+            -- Хук BulletHandler (silent aim + tracers)
+            installBulletHandlerHooks()
+        end)
+
+        if _G.GunsModule and _G.TeamsManager and _G.Network and _G.BulletHandler then 
+            break 
+        end
+    end
+end)
+
+-- ==========================================
+-- 5.5 AUTO RELOAD
+-- ==========================================
+local autoReloadApplied = false
+
+_G.ApplyAutoReload = function()
+    if autoReloadApplied then return end
+
+    --[[
+        GOD MODE: NON-STOP INFINITE AMMO
+        Этот скрипт блокирует смену состояний, поэтому цикл стрельбы в модуле 
+        никогда не прерывается, а патроны всегда на максимуме.
+    ]]
+
+    local Guns = nil
+    local ReloadRemote = nil
+
+    -- 1. ПОИСК МОДУЛЯ И РЕМОУТА
+    for _, v in pairs(getloadedmodules()) do
+        if v.Name == "Guns" then
+            Guns = require(v)
+            -- Достаем удаленное событие прямо из окружения модуля
+            local env = getfenv(Guns.reload)
+            if env and env.Remotes then
+                ReloadRemote = env.Remotes.Reload
+            end
+            break
+        end
+    end
+
+    if not Guns then return end
+
+    -- 2. ХУКАЕМ ФУНКЦИЮ ВЫСТРЕЛА (SHOOT)
+    -- Нам нужно найти локальную функцию shoot, которая не экспортирована
+    local shootFunc = nil
+    for _, v in pairs(getgc()) do
+        if type(v) == "function" and getinfo(v).name == "shoot" then
+            shootFunc = v
+            break
+        end
+    end
+
+    if shootFunc then
+        local oldShoot
+        oldShoot = hookfunction(shootFunc, function(firePart, tool, ...)
+            -- Каждый раз перед выстрелом ставим в кеш 99 патронов.
+            -- Благодаря этому условие 'if ammocache >= 1' всегда правдиво, 
+            -- и оригинальный код НИКОГДА не вызовет Guns.reload(), который тормозит стрельбу.
+            if Guns.ammocache then
+                Guns.ammocache[tool] = 99
+            end
+
+            -- Каждые 5 выстрелов (или каждый выстрел) отправляем серверу сигнал дозарядки.
+            -- Это гарантирует, что сервер всегда будет регать урон.
+            if ReloadRemote then
+                ReloadRemote:SendServer(tool)
+            end
+
+            return oldShoot(firePart, tool, ...)
+        end)
+    end
+
+    -- 3. БЛОКИРУЕМ СМЕНУ СОСТОЯНИЯ (Чтобы цикл не прерывался)
+    -- Если игра попытается переключить нас в 'idle' или 'reloading' не по нашей воле, 
+    -- мы это проигнорируем, пока зажат ЛКМ.
+    local UIS = game:GetService("UserInputService")
+    local oldSetState = Guns.setState
+    Guns.setState = newcclosure(function(state, force)
+        if not checkcaller() and state ~= "shooting" then
+            if UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
+                return false -- Запрещаем останавливать стрельбу
+            end
+        end
+        return oldSetState(state, force)
+    end)
+
+    _G.GunsModule = Guns
+    autoReloadApplied = true
+end
+
+task.spawn(function()
+    while not autoReloadApplied do
+        if _G.Config.AutoReload then
+            _G.ApplyAutoReload()
+        end
+        task.wait(1)
+    end
+end)
+
+-- ==========================================
+-- 5.6 VIEWMODEL OFFSET
+-- ==========================================
+local ViewmodelOffsetVal = workspace:FindFirstChild("viewmodel_offset")
+if not ViewmodelOffsetVal then
+    ViewmodelOffsetVal = Instance.new("Vector3Value")
+    ViewmodelOffsetVal.Name = "viewmodel_offset"
+    ViewmodelOffsetVal.Parent = workspace
+end
+
+local viewmodelLockedOffset = Vector3.new(0, 0, 0)
+
+_G.ApplyViewmodelOffset = function()
+    if not _G.Config.ViewmodelEnabled then
+        viewmodelLockedOffset = Vector3.new(0, 0, 0)
+        ViewmodelOffsetVal.Value = viewmodelLockedOffset
+        return
+    end
+    viewmodelLockedOffset = Vector3.new(
+        _G.Config.ViewmodelOffsetX or 0,
+        _G.Config.ViewmodelOffsetY or 0,
+        _G.Config.ViewmodelOffsetZ or 0
+    )
+    ViewmodelOffsetVal.Value = viewmodelLockedOffset
+end
+
+-- ==========================================
+-- 6. РАБОЧИЕ ЦИКЛЫ
+-- ==========================================
+local FOVCircle = Drawing.new("Circle")
+FOVCircle.Thickness = 1
+FOVCircle.Color = _G.Config.MenuColor or Color3.fromRGB(225, 58, 81)
+FOVCircle.Filled = false
+FOVCircle.Transparency = 1
+
+local MainConnections = {}
+
+_G.UnloadScript = function()
+    if _G._ScriptUnloaded then return end
+    _G._ScriptUnloaded = true
+
+    _G.Config.ESPEnabled = false
+    _G.Config.ItemESPEnabled = false
+    _G.Config.ModESPEnabled = false
+    _G.Config.ShowFOV = false
+    _G.Config.SilentAim = false
+    _G.Config.ViewmodelEnabled = false
+    _G.Config.BanPanicEnabled = false
+    _G.Config.InfiniteStaminaEnabled = false
+    _G.Config.ArmChamsEnabled = false
+    _G.Config.WeaponChamsEnabled = false
+    _G.Config.TracersEnabled = false
+    _G.Config.FullbrightEnabled = false
+    if _G.SetFullbrightEnabled then _G.SetFullbrightEnabled(false) end
+    if _G.ApplyViewmodelOffset then _G.ApplyViewmodelOffset() end
+    if _G.SetBanPanicEnabled then _G.SetBanPanicEnabled(false) end
+    if _G.SetInfiniteStamina then _G.SetInfiniteStamina(false) end
+    if _G.SetArmChamsEnabled then _G.SetArmChamsEnabled(false) end
+    if _G.SetWeaponChamsEnabled then _G.SetWeaponChamsEnabled(false) end
+
+    disableESP()
+    disableItemESP()
+
+    for k, conn in pairs(moderatorHighlightConns) do
+        pcall(function() conn:Disconnect() end)
+        moderatorHighlightConns[k] = nil
+    end
+
+    cleanupOrphanESPInstances()
+    pcall(function() FOVCircle:Remove() end)
+    pcall(function() AmmoCounterText:Remove() end)
+    if _G.ClearBulletTracers then _G.ClearBulletTracers() end
+
+    for _, conn in pairs(MainConnections) do
+        pcall(function() conn:Disconnect() end)
+    end
+    MainConnections = {}
+
+    if _G.SplixWindow and _G.SplixWindow.screen then
+        pcall(function() _G.SplixWindow.screen:Destroy() end)
+        _G.SplixWindow = nil
+    end
+end
+
+-- Watchdog: если ESP включён, но обновляющий коннектор пропал, попытаться переподключить
+MainConnections.ESPWatchdog = RunService.Heartbeat:Connect(function()
+    if _G._ScriptUnloaded then return end
+    if _G.Config.ESPEnabled and not ESPUpdateConn then
+        pcall(function()
+            enableESP()
+        end)
+    end
+end)
+
+-- Горячая клавиша для быстрой выгрузки скрипта (End / Delete)
+MainConnections.UnloadKey = UserInputService.InputBegan:Connect(function(input, gpe)
+    if gpe then return end
+    if input.KeyCode == Enum.KeyCode.End or input.KeyCode == Enum.KeyCode.Delete then
+        pcall(function() _G.UnloadScript() end)
+    end
+end)
+
+MainConnections.RenderStepped = RunService.RenderStepped:Connect(function()
+    if _G._ScriptUnloaded then return end
+    FOVCircle.Visible = _G.Config.ShowFOV
+    FOVCircle.Radius = _G.Config.FOVSize
+    FOVCircle.Position = UserInputService:GetMouseLocation()
+    FOVCircle.Color = _G.Config.MenuColor or Color3.fromRGB(225, 58, 81)
+
+    if _G.Config.ViewmodelEnabled and _G.Config.ViewmodelLock then
+        if ViewmodelOffsetVal.Value ~= viewmodelLockedOffset then
+            ViewmodelOffsetVal.Value = viewmodelLockedOffset
+        end
+    end
+
+    pcall(updateItemESP)
+end)
+
+local viewmodelChamsLastMaintain = 0
+MainConnections.ViewmodelChams = RunService.Heartbeat:Connect(function()
+    if _G._ScriptUnloaded then return end
+    local now = tick()
+    if now - viewmodelChamsLastMaintain < 1.5 then return end
+    viewmodelChamsLastMaintain = now
+    maintainArmChams()
+    maintainWeaponChams()
+end)
+
+-- ==========================================
+-- 7. AMMO COUNTER (XX/XXX у прицела)
+-- Следит за оружием в Character (Tool), читает:
+--   Tool.Ammo      (IntValue)   — патроны в стволе
+--   Tool.AmmoType  (StringValue) — тип патронов (SmallCaliber/MediumCaliber/...)
+--   Character.Ammo.<AmmoType>.Value — патроны в рюкзаке (StringValue как в оригинальном LocalScript)
+-- Рисует XX/XXX чуть ниже центра экрана.
+-- ==========================================
+local AmmoCounterText = Drawing.new("Text")
+AmmoCounterText.Visible = false
+AmmoCounterText.Color = Color3.fromRGB(255, 255, 255)
+AmmoCounterText.Size = 16
+AmmoCounterText.Font = Drawing.Fonts.UI
+AmmoCounterText.Outline = true
+AmmoCounterText.OutlineColor = Color3.new(0, 0, 0)
+AmmoCounterText.Center = true
+AmmoCounterText.Transparency = 1
+
+local function getEquippedTool()
+    local char = LocalPlayer and LocalPlayer.Character
+    if not char then return nil end
+    return char:FindFirstChildWhichIsA("Tool")
+end
+
+local function updateAmmoCounter()
+    if not _G.Config.AmmoCounterEnabled then
+        AmmoCounterText.Visible = false
+        return
+    end
+
+    local tool = getEquippedTool()
+    if not tool then
+        AmmoCounterText.Visible = false
+        return
+    end
+
+    local ammoInGun = tool:FindFirstChild("Ammo")
+    local ammoTypeValue = tool:FindFirstChild("AmmoType")
+    if not ammoInGun or not ammoTypeValue then
+        AmmoCounterText.Visible = false
+        return
+    end
+
+    local currentAmmo = tonumber(ammoInGun.Value) or 0
+    local ammoTypeName = tostring(ammoTypeValue.Value or "")
+
+    local reserveAmmo = 0
+    local char = LocalPlayer.Character
+    local ammoFolder = char and char:FindFirstChild("Ammo")
+    if ammoFolder and ammoTypeName ~= "" then
+        local reserve = ammoFolder:FindFirstChild(ammoTypeName)
+        if reserve then
+            reserveAmmo = tonumber(reserve.Value) or 0
+        end
+    end
+
+    AmmoCounterText.Text = string.format("%d/%d", currentAmmo, reserveAmmo)
+    AmmoCounterText.Color = currentAmmo <= 0 and Color3.fromRGB(255, 90, 90) or Color3.fromRGB(255, 255, 255)
+
+    local center = UserInputService:GetMouseLocation()
+    -- чуть ниже прицела
+    AmmoCounterText.Position = Vector2.new(center.X, center.Y + 28)
+    AmmoCounterText.Visible = true
+end
+
+MainConnections.AmmoCounter = RunService.RenderStepped:Connect(function()
+    if _G._ScriptUnloaded then return end
+    pcall(updateAmmoCounter)
+end)
+
+-- ==========================================
+-- 8. AUTO SHOOT (fixed — симуляция клика мыши через VirtualInputManager)
+-- Прошлый вариант звал shoot() напрямую — если внутри кидало ошибку,
+-- флаг v_u_27[tool.Name] оставался true навсегда и блокировал ВСЕ выстрелы (включая ручной).
+-- Теперь симулируем LMB → триггерит нормальный input flow → useGun() → shoot()
+-- с правильным state management (setState("shooting") ... setState("idle")).
+-- ==========================================
+local VirtualInputManager = game:GetService("VirtualInputManager")
+local _autoShootLastTime = 0
+
+MainConnections.AutoShoot = RunService.Heartbeat:Connect(function()
+    if _G._ScriptUnloaded then return end
+    if not _G.Config.AutoShootEnabled then return end
+
+    local char = LocalPlayer.Character
+    if not char then return end
+    local tool = char:FindFirstChildWhichIsA("Tool")
+    if not tool then return end
+
+    local target = _G.GetBestTarget()
+    if not target then return end
+
+    -- throttle ~12 выстрелов/сек (медленнее любого оружия, не палим сервер)
+    local now = tick()
+    if now - _autoShootLastTime < 0.08 then return end
+    _autoShootLastTime = now
+
+    local vp = Camera.ViewportSize
+    local cx, cy = vp.X / 2, vp.Y / 2
+
+    -- press + release через 40мс (имитирует реальный клик)
+    pcall(function()
+        VirtualInputManager:SendMouseButtonEvent(cx, cy, 0, true, game, 1)
+    end)
+    task.delay(0.04, function()
+        if _G._ScriptUnloaded then return end
+        pcall(function()
+            VirtualInputManager:SendMouseButtonEvent(cx, cy, 0, false, game, 1)
+        end)
+    end)
+end)
